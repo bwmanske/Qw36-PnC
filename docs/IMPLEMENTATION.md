@@ -5,48 +5,74 @@
 ```
 project/
 ├── CMakeLists.txt                  # Top-level CMake configuration
+├── AGENTS.md                       # Build/test instructions, MSVC gotchas, architecture
 ├── specs/
 │   ├── spec.md                     # Umbrella specification
 │   ├── Producer-Spec.md            # Producer detailed specification
 │   └── Consumer-Spec.md            # Consumer detailed specification
 ├── docs/
 │   ├── IMPLEMENTATION.md           # This document
+│   ├── PROGRESS.md                 # Remaining tasks tracker
+│   ├── TESTING.md                  # Testing strategy
 │   └── USER_GUIDE.md               # End-user documentation
 ├── include/
 │   ├── common/
-│   │   ├── message.h               # JSON message types (work_unit, result, work_request)
-│   │   ├── queue.h                 # Thread-safe bounded queue
+│   │   ├── archive_validator.h     # libarchive wrapper for ZIP/RAR/7Z validation
+│   │   ├── checkpoint.h            # CheckpointState + CheckpointManager
+│   │   ├── message.h               # 4 message types: work_unit, result, work_request, heartbeat
+│   │   ├── queue.h                 # Thread-safe bounded queue (template, header-only impl)
+│   │   ├── signal_handler.h        # Platform-abstracted signal handling
 │   │   ├── socket.h                # Platform-abstracted TCP/UDP socket wrapper
-│   │   ├── types.h                 # Shared type definitions
-│   │   └── checkpoint.h            # Checkpoint state read/write
-│   ├── producer/
-│   │   ├── producer.h              # Producer engine
-│   │   └── work_tracker.h          # Work unit tracking table
-│   └── consumer/
-│       ├── consumer.h              # Consumer engine
-│       └── thread_pool.h           # Consumer thread pool
+│   │   ├── types.h                 # Shared enums and structs (Transport, MessageType, etc.)
+│   │   └── util.h                  # SHA-256 (RFC 6234) + get_data_directory()
+│   ├── consumer/
+│   │   ├── consumer.h              # Consumer engine
+│   │   ├── file_result_sink.h      # JSON-lines result sink with running stats
+│   │   ├── result_sink.h           # IResultSink interface
+│   │   ├── thread_pool.h           # Consumer thread pool with callbacks
+│   │   ├── work_unit_handler.h     # IWorkUnitHandler interface
+│   │   ├── PWD_Handler.h           # Password brute-force handler
+│   │   └── BENCH_Handler.h         # File chunk benchmark handler
+│   └── producer/
+│       ├── producer.h              # Producer engine
+│       ├── work_tracker.h          # Work unit tracking table
+│       ├── test_plugin.h           # TestPlugin dispatch table (4 std::function members)
+│       ├── PWD_plugin.h            # Password brute-force plugin factory
+│       └── BENCH_plugin.h          # File chunk benchmark plugin factory
 ├── src/
 │   ├── common/
+│   │   ├── archive_validator.cpp   # libarchive integration
+│   │   ├── checkpoint.cpp          # Checkpoint save/load logic
 │   │   ├── message.cpp             # Message serialization/deserialization
-│   │   ├── queue.cpp               # BoundedQueue implementation
-│   │   ├── socket.cpp              # Platform-specific socket code (#ifdef _WIN32)
+│   │   ├── queue.cpp               # (Empty — template impl is in header)
 │   │   ├── signal_handler.cpp      # Platform-specific signal handling
-│   │   └── checkpoint.cpp          # Checkpoint save/load logic
-│   ├── producer/
-│   │   ├── producer.cpp            # Producer engine implementation
-│   │   ├── work_tracker.cpp        # Work unit lifecycle management
-│   │   └── main.cpp                # Producer entry point, CLI parsing
-│   └── consumer/
-│       ├── consumer.cpp            # Consumer engine implementation
-│       ├── thread_pool.cpp         # Thread pool implementation
-│       └── main.cpp                # Consumer entry point, CLI parsing
+│   │   ├── socket.cpp              # Platform-specific socket code (pimpl)
+│   │   └── util.cpp                # SHA-256 + data directory
+│   ├── consumer/
+│   │   ├── consumer.cpp            # Consumer engine implementation
+│   │   ├── main.cpp                # Consumer entry point, CLI parsing
+│   │   ├── file_result_sink.cpp    # JSON-lines output implementation
+│   │   ├── PWD_Handler.cpp         # PWD handler implementation
+│   │   ├── BENCH_Handler.cpp       # BENCH handler implementation
+│   │   └── thread_pool.cpp         # Thread pool implementation
+│   └── producer/
+│       ├── main.cpp                # Producer entry point, CLI parsing
+│       ├── producer.cpp            # Producer engine implementation
+│       ├── work_tracker.cpp        # Work unit lifecycle management
+│       ├── PWD_NextUnit.h          # Legacy C-style permutation generator
+│       ├── PWD_NextUnit.cpp        # Legacy C-style permutation generator
+│       ├── PWD_plugin.cpp          # PWD TestPlugin wrapper
+│       └── BENCH_plugin.cpp        # BENCH TestPlugin implementation
 └── tests/
     ├── CMakeLists.txt              # Test CMake configuration
-    ├── test_message.cpp            # Message serialization round-trip
-    ├── test_queue.cpp              # Thread-safe queue stress test
-    ├── test_work_tracker.cpp       # Work unit lifecycle tests
     ├── test_checkpoint.cpp         # Checkpoint save/resume tests
-    └── test_integration.cpp        # Producer-Consumer end-to-end
+    ├── test_file_result_sink.cpp   # FileResultSink JSON lines + stats
+    ├── test_integration.cpp        # Producer-Consumer end-to-end
+    ├── test_message.cpp            # Message serialization round-trip
+    ├── test_pwd_next_unit.cpp      # PWD_NextUnit permutation engine
+    ├── test_queue.cpp              # Thread-safe queue stress test
+    ├── test_sha256.cpp             # SHA-256 RFC 6234 vectors + file hash
+    └── test_work_tracker.cpp       # Work unit lifecycle tests
 ```
 
 ## 2. Build System
@@ -59,35 +85,48 @@ project/
 
 ### Dependencies (FetchContent)
 
-| Library       | Purpose                              |
-|---------------|--------------------------------------|
-| nlohmann/json | JSON serialization/deserialization   |
-| GTest         | Unit and integration testing         |
+| Library       | Version | Purpose                              |
+|---------------|---------|--------------------------------------|
+| nlohmann/json | v3.11.3 | JSON serialization/deserialization   |
+| GTest         | v1.14.0 | Unit and integration testing         |
+| zlib          | v1.3.1  | Required by libarchive for ZIP       |
+| libarchive    | v3.7.9  | ZIP, RAR, 7Z archive validation      |
+
+libarchive is built static with only ZIP, RAR, and 7ZIP formats enabled. All other
+compression backends (bzip2, lzma, zstd, lz4, xz, etc.) are disabled to minimize
+build time and binary size.
 
 ### Build Commands
 
-```bash
-# Configure
-cmake -B build
+```powershell
+# Configure (one-time or after CMakeLists.txt changes)
+cmake -B build -DBUILD_TESTS=ON
 
-# Build all targets
-cmake --build build
+# Build Release
+cmake --build build --config Release
 
-# Build with tests disabled
-cmake -B build -DBUILD_TESTS=OFF
-cmake --build build
+# Run tests (ctest does NOT discover tests on Windows; run executables directly):
+build\tests\Release\test_message.exe
+build\tests\Release\test_queue.exe
+build\tests\Release\test_work_tracker.exe
+build\tests\Release\test_checkpoint.exe
+build\tests\Release\test_integration.exe
+build\tests\Release\test_pwd_next_unit.exe
+build\tests\Release\test_sha256.exe
+build\tests\Release\test_file_result_sink.exe
 ```
 
 ### CMake Targets
 
-CMake selects targets based on `CMAKE_SYSTEM_NAME`:
+| Target           | Type      | Description                                      |
+|------------------|-----------|--------------------------------------------------|
+| `common`         | static lib| Sockets, messages, queue, checkpoint, SHA-256, signal handling, archive validator |
+| `producer_lib`   | static lib| Producer logic, work tracker, PWD_NextUnit, PWD/BENCH plugins |
+| `consumer_lib`   | static lib| Consumer logic, thread pool, PWD/BENCH handlers, file result sink |
+| `producer`       | executable| CLI entry point                                  |
+| `consumer`       | executable| CLI entry point                                  |
 
-| Target           | Platform | Description            |
-|------------------|----------|------------------------|
-| `producer_win`   | Windows  | Producer CLI (MSVC)    |
-| `producer_linux` | Linux    | Producer CLI (GCC/Clang) |
-| `consumer_win`   | Windows  | Consumer CLI (MSVC)    |
-| `consumer_linux` | Linux    | Consumer CLI (GCC/Clang) |
+Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the executables.
 
 Platform-specific linking:
 - Windows: `ws2_32` for WinSock2
@@ -95,9 +134,9 @@ Platform-specific linking:
 
 ## 3. Platform Conditionals
 
-All platform-specific code uses `#ifdef _WIN32` / `#else` guards. Areas requiring conditionals:
+All platform-specific code uses `#ifdef _WIN32` / `#else` guards.
 
-### Socket Layer (`socket.cpp`)
+### Socket Layer (`socket.cpp` — pimpl pattern)
 
 | Concern              | Windows                    | Linux                    |
 |----------------------|----------------------------|--------------------------|
@@ -106,16 +145,18 @@ All platform-specific code uses `#ifdef _WIN32` / `#else` guards. Areas requirin
 | Socket type          | `SOCKET`                   | `int`                    |
 | Close                | `closesocket()`            | `close()`                |
 | Error code           | `WSAGetLastError()`        | `errno`                  |
-| Address family       | `AF_INET`                  | `AF_INET`                |
-| Socket type constant | `SOCK_STREAM` / `SOCK_DGRAM` | `SOCK_STREAM` / `SOCK_DGRAM` |
+| Recv timeout         | `setsockopt(SO_RCVTIMEO, struct timeval)` | `setsockopt(SO_RCVTIMEO, struct timeval)` |
+
+The `Socket` class uses a pimpl (`class Impl`) to hide platform-specific members.
+Methods `send_data`/`recv_data` are named to avoid WinSock2 macro collisions.
 
 ### Signal Handling (`signal_handler.cpp`)
 
 | Concern              | Windows                    | Linux                    |
 |----------------------|----------------------------|--------------------------|
-| Handler registration | `signal(SIGINT, handler)`  | `sigaction(SIGINT, ...)` |
-| Ctrl+C               | `SetConsoleCtrlHandler()`  | `SIGINT`                 |
-| Termination          | `SIGTERM`                  | `SIGTERM`                |
+| Handler registration | `SetConsoleCtrlHandler()`  | `sigaction(SIGINT, ...)` |
+| Ctrl+C               | `CTRL_C_EVENT`             | `SIGINT`                 |
+| Termination          | `CTRL_BREAK_EVENT`         | `SIGTERM`                |
 
 ### Hostname (`consumer.cpp`)
 
@@ -124,39 +165,82 @@ All platform-specific code uses `#ifdef _WIN32` / `#else` guards. Areas requirin
 | Function             | `GetComputerNameExW()`     | `gethostname()`          |
 | Header               | `<windows.h>`              | `<unistd.h>`             |
 
+### Data Directory (`util.cpp`)
+
+| Platform | Path                              |
+|----------|-----------------------------------|
+| Windows  | `%APPDATA%\Producer\`             |
+| Linux    | `~/.local/share/producer/`        |
+
+`get_data_directory()` creates the directory if it does not exist.
+
 ### File Paths
 
 Use `std::filesystem` (C++17) wherever possible. It abstracts path separators
 across platforms. Avoid hardcoding `/` or `\`.
 
-## 4. Common Library Architecture
+## 4. MSVC Gotchas
+
+- **Always `#define NOMINMAX` before `<windows.h>`** — MSVC's `min`/`max` macros break `std::min`/`std::max`.
+- **Never name functions `send` or `recv`** — WinSock2 defines them as macros. Use `send_data`/`recv_data` (already done in `socket.h/cpp`).
+- **`ssize_t` not defined on Windows** — the `common/` namespace provides `using ssize_t = int;` in `socket.h`.
+- **`std::istreambuf_iterator` unreliable on MSVC** — use `tellg` + `seekg` + `read` for file-to-vector operations.
+- **libarchive `__declspec(dllimport)` mismatch** — `#define LIBARCHIVE_STATIC` is set via `target_compile_definitions` in CMake.
+
+## 5. Common Library Architecture
+
+### `types.h`
+
+Shared type definitions in the `pc` namespace:
+
+```cpp
+enum class Transport { TCP, UDP };
+enum class MessageType { WorkUnit, Result, WorkRequest };
+enum class WorkUnitStatus { Pending, Sent, Completed, Failed };
+
+struct WorkUnitEntry {
+    std::string work_unit_id;
+    int64_t seq;
+    nlohmann::json job;
+    WorkUnitStatus status;
+    std::string consumer_id;
+    std::string sent_at;
+    std::string completed_at;
+};
+
+struct ConsumerState {
+    std::string consumer_id;
+    int pending_units;
+};
+```
 
 ### `message.h` / `message.cpp`
 
-Defines the three message types as structs with serialization helpers:
+Four message types, each with `to_json()`, `from_json()`, `to_string()`, `from_string()`:
 
 ```cpp
-// Conceptual structure (not final code)
-enum class MessageType { WorkUnit, Result, WorkRequest };
-
 struct WorkUnitMessage {
+    std::string test_type;
     std::string source_file;
     std::string permutation;
-    int64_t permutation_seed;
+    std::optional<int64_t> permutation_seed;
     std::string work_unit_id;
     int64_t seq;
     std::string timestamp;
     std::string producer_id;
     nlohmann::json job;
+    std::optional<std::string> source_hash;
 };
 
 struct ResultMessage {
     std::string work_unit_id;
     int64_t seq;
     std::string consumer_id;
-    std::string status;  // "success" or "failure"
+    std::string status;          // "success" or "failure"
     nlohmann::json result;
     std::string timestamp;
+    std::optional<std::string> found_password;
+    std::optional<std::string> file_error;
 };
 
 struct WorkRequestMessage {
@@ -164,91 +248,90 @@ struct WorkRequestMessage {
     int threads_available;
     std::string timestamp;
 };
+
+struct HeartbeatMessage {
+    std::string consumer_id;
+    std::string timestamp;
+};
 ```
 
-Each struct provides:
-- `to_json()` → `nlohmann::json`
-- `from_json(const nlohmann::json&)` → struct
-- `to_string()` → serialized JSON string
-- `from_string(const std::string&)` → struct (static)
+### `queue.h`
 
-### `queue.h` / `queue.cpp`
-
-Bounded, thread-safe queue:
+Thread-safe bounded queue — full template implementation in the header:
 
 ```cpp
-// Conceptual structure
 template<typename T>
 class BoundedQueue {
 public:
     explicit BoundedQueue(size_t capacity);
-    void push(T item);              // Blocks if full
-    T pop();                        // Blocks if empty, throws on shutdown
+    void push(T item);                          // Blocks if full
+    T pop();                                    // Blocks if empty, throws on shutdown
     bool try_push(T item, std::chrono::milliseconds timeout);
-    bool try_pop(T& item, std::chrono::milliseconds timeout);
+    std::optional<T> try_pop(std::chrono::milliseconds timeout);
     size_t size() const;
-    void shutdown();                // Unblocks all waiters
+    bool empty() const;
+    void shutdown();                            // Unblocks all waiters
 private:
-    std::mutex mtx_;
-    std::condition_variable not_full_;
-    std::condition_variable not_empty_;
     std::deque<T> buffer_;
     size_t capacity_;
+    mutable std::mutex mtx_;
+    std::condition_variable not_full_;
+    std::condition_variable not_empty_;
     bool shutdown_ = false;
 };
 ```
 
 ### `socket.h` / `socket.cpp`
 
-Platform-abstracted socket wrapper supporting both TCP and UDP:
+Platform-abstracted socket wrapper with pimpl pattern:
 
 ```cpp
-// Conceptual structure
-enum class Transport { TCP, UDP };
-
 class Socket {
 public:
-    Socket(Transport transport);
-    ~Socket();
+    explicit Socket(Transport transport = Transport::TCP);
+    // Non-copyable, movable
     void bind(const std::string& address, uint16_t port);
     void listen(int backlog = 5);
-    Socket accept();               // TCP only, returns new connected socket
+    Socket accept();                            // TCP only
     void connect(const std::string& address, uint16_t port);
-    ssize_t send(const uint8_t* data, size_t len);
-    ssize_t recv(uint8_t* buffer, size_t maxlen);
-    void close();
+    ssize_t send_data(const uint8_t* data, size_t len);
+    ssize_t recv_data(uint8_t* buffer, size_t maxlen);
+    void set_recv_timeout(int milliseconds);    // SO_RCVTIMEO
     // UDP-specific
-    ssize_t sendto(const std::string& address, uint16_t port, const uint8_t* data, size_t len);
-    ssize_t recvfrom(std::string& address, uint16_t& port, uint8_t* buffer, size_t maxlen);
+    ssize_t send_to(const std::string& address, uint16_t port, const uint8_t* data, size_t len);
+    ssize_t recv_from(std::string& address, uint16_t& port, uint8_t* buffer, size_t maxlen);
+    void close();
+    bool is_open() const;
 };
+
+// Frame helpers (length-prefixed)
+void send_frame(Socket& sock, const std::string& json);
+std::string recv_frame(Socket& sock);
+void send_frame_udp(Socket& sock, const std::string& address, uint16_t port, const std::string& json);
+std::string recv_frame_udp(Socket& sock, std::string& from_address, uint16_t& from_port);
 ```
 
-Frame helper functions (length-prefixed):
-- `send_frame(Socket& sock, const std::string& json)` — writes 4-byte length + payload
-- `recv_frame(Socket& sock)` — reads 4-byte length, then reads payload, returns string
+### `signal_handler.h` / `signal_handler.cpp`
 
-### `signal_handler.cpp`
-
-Sets up platform-appropriate signal handling:
+Platform-appropriate signal handling:
 
 ```cpp
-// Conceptual structure
 class SignalHandler {
 public:
-    static void install();         // Register handlers for SIGINT/SIGTERM
+    static void install();
     static bool is_stop_requested();
     static void reset();
 private:
     static std::atomic<bool> stop_requested_;
+    // Platform-specific callback (console_handler on Windows, signal_callback on Linux)
 };
 ```
 
 ### `checkpoint.h` / `checkpoint.cpp`
 
-Reads and writes checkpoint state:
+Checkpoint state with plugin state support:
 
 ```cpp
-// Conceptual structure
 struct CheckpointState {
     std::string producer_id;
     std::string source_file;
@@ -262,206 +345,364 @@ struct CheckpointState {
     int64_t failed_count;
     std::string checkpoint_timestamp;
     std::vector<ConsumerState> consumers_connected;
+    std::optional<nlohmann::json> plugin_state;
+    // to_json() / from_json()
 };
 
 class CheckpointManager {
 public:
     explicit CheckpointManager(const std::string& directory);
-    void save(const CheckpointState& state);   // Writes backup, then primary
-    CheckpointState load() const;              // Tries primary, falls back to backup
+    void save(const CheckpointState& state);     // Writes backup, then primary
+    std::optional<CheckpointState> load() const;  // Tries primary, falls back to backup
     bool exists() const;
-private:
-    std::string dir_;
-    std::string primary_path_;
-    std::string backup_path_;
+    const std::string& directory() const;
+    const std::string& primary_path() const;
+    const std::string& backup_path() const;
 };
 ```
 
-## 5. Producer Architecture
+### `util.h` / `util.cpp`
+
+Pure C++ SHA-256 (RFC 6234 implementation) and platform data directory:
+
+```cpp
+std::string sha256_file(const std::string& path);
+std::string sha256_bytes(const uint8_t* data, size_t len);
+std::string get_data_directory();
+```
+
+### `archive_validator.h` / `archive_validator.cpp`
+
+libarchive wrapper for password-protected archive validation:
+
+```cpp
+class ArchiveValidator {
+public:
+    enum class Error { None, WrongPassword, FileError };
+    struct Result {
+        bool valid = false;
+        Error error = Error::None;
+        std::string message;
+    };
+    static Result validate(const std::string& path, const std::string& password);
+};
+```
+
+Supports ZIP, RAR, and 7Z formats. Used by `PWD_Handler` to verify candidate passwords.
+
+## 6. Producer Architecture
+
+### `test_plugin.h` — Plugin Dispatch Table
+
+The plugin system uses a struct of four `std::function` members:
+
+```cpp
+struct TestPlugin {
+    std::function<void(const std::string&, const nlohmann::json&)> startup;
+    //   (config_path, resume_state) — reads plugin config, restores from checkpoint
+
+    std::function<bool(WorkUnitMessage&)> next_unit;
+    //   (out) — generates next work unit, returns false when exhausted
+
+    std::function<nlohmann::json()> checkpoint;
+    //   () — returns plugin-specific state for checkpoint merge
+
+    std::function<bool()> exit_conditions;
+    //   () — returns true when plugin wants to stop
+
+    bool is_valid() const;  // All four functions must be non-null
+};
+```
+
+### Existing Plugins
+
+| Plugin | Creator Function | Purpose |
+|--------|-----------------|---------|
+| `PWD` | `create_pwd_plugin()` | Password permutation generator, wraps legacy `PWD_NextUnit` |
+| `BENCH` | `create_bench_plugin()` | File chunk benchmark |
 
 ### `work_tracker.h` / `work_tracker.cpp`
 
-Maintains the work unit tracking table:
+Maintains the work unit tracking table with thread-safe access:
 
 ```cpp
-// Conceptual structure
-enum class WorkUnitStatus { Pending, Sent, Completed, Failed };
-
-struct WorkUnitEntry {
-    std::string work_unit_id;
-    int64_t seq;
-    nlohmann::json job;
-    WorkUnitStatus status;
-    std::string consumer_id;
-    std::string sent_at;
-    std::string completed_at;
-};
-
 class WorkTracker {
 public:
     void add_pending(const WorkUnitEntry& entry);
     void mark_sent(const std::string& work_unit_id, const std::string& consumer_id);
     void mark_completed(const std::string& work_unit_id);
-    void mark_failed(const std::string& work_unit_id);  // Returns to pending
-    std::vector<WorkUnitEntry> get_pending(int count);   // For dispatch
-    WorkUnitEntry find(const std::string& work_unit_id) const;
-    CheckpointState to_checkpoint() const;
+    void mark_failed(const std::string& work_unit_id);
+    std::vector<WorkUnitEntry> get_pending(int count);
+    std::optional<WorkUnitEntry> find(const std::string& work_unit_id) const;
     int64_t last_completed_seq() const;
+    int64_t completed_count() const;
+    int64_t pending_count() const;
+    int64_t failed_count() const;
+    std::vector<std::string> get_failed_for_consumer(const std::string& consumer_id);
+    CheckpointState to_checkpoint(int64_t total_jobs) const;
 };
 ```
 
 ### `producer.h` / `producer.cpp`
 
-Main Producer engine coordinating all threads:
+Main Producer engine with multi-threaded architecture:
 
 ```cpp
-// Conceptual structure
 class Producer {
-public:
-    Producer(const ProducerConfig& config);
+    // Core lifecycle
     void run();
     void shutdown();
-private:
-    void load_job_file();
-    void apply_permutation();
-    void load_checkpoint();
-    void dispatcher_loop();
-    void handle_work_request(const WorkRequestMessage& req, Socket& client);
-    void handle_result(const ResultMessage& result);
-    void checkpoint_loop();
-    // ... members
+
+    // Job loading
+    void load_job_config();    // Reads JSON config, extracts test_type, source_file, etc.
+    void load_checkpoint();    // Restores from checkpoint if --resume
+    void init_plugin();        // Creates TestPlugin based on test_type
+
+    // Threading
+    void dispatcher_loop();           // Pops from dispatch_queue_, sends to consumers
+    void handle_client(Socket);       // Per-consumer connection handler
+    void checkpoint_loop();           // Periodic checkpoint saves
+    void file_transfer_loop();        // Listens on port+1 for file requests
+    void monitor_connections();       // Detects stale consumers, disconnects after 30s
+
+    // Message handling
+    void handle_work_request(const WorkRequestMessage&, Socket&);
+    void handle_result(const ResultMessage&);
+
+    // Consumer registration
+    void register_consumer(const std::string& consumer_id, Socket& socket);
+    void unregister_consumer(const std::string& consumer_id);
+    void update_consumer_activity(const std::string& consumer_id);
+
+    // Internal
+    struct ConsumerInfo {
+        Socket* socket;
+        std::chrono::steady_clock::time_point last_activity;
+        std::chrono::steady_clock::time_point registered_at;
+    };
 };
 ```
+
+Key threads:
+- **Main thread**: Accepts connections, spawns `handle_client` per consumer
+- **Dispatcher thread**: Generates work units via plugin, pushes to `dispatch_queue_`
+- **Checkpoint thread**: Periodically saves state via `CheckpointManager`
+- **File transfer thread**: Listens on `port + 1` for file download requests
+- **Monitor thread**: Scans `connected_consumers_` for stale connections (>30s idle)
 
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments
-2. Validate `--file`
+1. Parse CLI arguments (`--file`, `--port`, `--permutation`, `--seed`, `--duration`, `--resume`, `--checkpoint-dir`)
+2. Validate config file
 3. Check for checkpoint (if `--resume`)
 4. Construct and run `Producer`
-5. Handle signals
-6. Print statistics
+5. Handle signals via `SignalHandler`
+6. Print statistics on exit
 
-## 6. Consumer Architecture
+## 7. Consumer Architecture
+
+### `work_unit_handler.h` — Handler Interface
+
+```cpp
+class IWorkUnitHandler {
+public:
+    virtual ~IWorkUnitHandler() = default;
+    virtual std::string type() const = 0;
+    virtual ResultMessage handle(const WorkUnitMessage& work) = 0;
+};
+```
+
+### `result_sink.h` — Result Sink Interface
+
+```cpp
+class IResultSink {
+public:
+    virtual ~IResultSink() = default;
+    virtual std::string type() const = 0;
+    virtual void on_result(const ResultMessage& result) = 0;
+    virtual bool should_stop() const = 0;
+    virtual nlohmann::json summary() const = 0;
+};
+```
+
+### `file_result_sink.h` / `file_result_sink.cpp`
+
+JSON-lines output with running statistics:
+
+```cpp
+class FileResultSink : public IResultSink {
+    // Writes each result as a JSON line to file_path_
+    // Tracks total_, successes_, failures_ behind a mutex
+    // summary() returns { total, successes, failures }
+};
+```
+
+### Existing Handlers
+
+| Handler | Type() | Purpose |
+|---------|--------|---------|
+| `PWD_Handler` | `"PWD"` | Brute-force password validation using `ArchiveValidator` |
+| `BENCH_Handler` | `"BENCH"` | File chunk processing benchmark |
 
 ### `thread_pool.h` / `thread_pool.cpp`
 
 Thread pool with work request coordination:
 
 ```cpp
-// Conceptual structure
 class ThreadPool {
 public:
-    explicit ThreadPool(size_t num_threads);
-    ~ThreadPool();
     void start();
     void shutdown();
     void submit(WorkUnitMessage work);
     size_t idle_count() const;
-    void on_idle();  // Called by threads when queue is empty
-private:
-    std::vector<std::thread> workers_;
-    BoundedQueue<WorkUnitMessage> queue_;
-    std::atomic<size_t> idle_count_;
-    // ... members
+    size_t active_count() const;
+    size_t total_completed() const;
+    size_t total_failed() const;
+    void set_handler(std::shared_ptr<IWorkUnitHandler> handler);
+    void set_result_callback(ResultCallback cb);
+    void set_idle_callback(IdleCallback cb);
 };
 ```
+
+Worker threads pull from an internal `BoundedQueue<WorkUnitMessage>`, invoke the
+handler, and fire the result callback. When a thread goes idle, it fires the idle
+callback which triggers work requests to the producer.
 
 ### `consumer.h` / `consumer.cpp`
 
 Main Consumer engine:
 
 ```cpp
-// Conceptual structure
 class Consumer {
-public:
-    Consumer(const ConsumerConfig& config);
+    // Core lifecycle
     void run();
     void shutdown();
-private:
+
+    // Network
     void connect_to_producer();
     void receiver_loop();
-    void download_source_file(const std::string& source_file);
+    void heartbeat_loop();              // Sends heartbeat every 5s
+    void download_source_file(const std::string& source_file, const std::string& source_hash);
     void send_work_request(int threads_available);
     void send_result(const ResultMessage& result);
-    void process_work_unit(WorkUnitMessage work);
-    // ... members
+
+    // Duplicate detection
+    bool is_completed(const std::string& work_unit_id);
+    void mark_completed(const std::string& work_unit_id);
+    // LRU cache: std::list + std::unordered_set, max 3000 entries
+
+    // Members
+    std::shared_ptr<IWorkUnitHandler> handler_;
+    std::shared_ptr<IResultSink> sink_;
+    std::chrono::steady_clock::time_point last_request_time_;  // Throttle: 50ms min interval
 };
 ```
+
+Key threads:
+- **Main thread**: Runs `run()`, manages lifecycle
+- **Receiver thread**: Reads frames from producer, dispatches to work queue
+- **Heartbeat thread**: Sends `HeartbeatMessage` every 5 seconds
+- **Pool threads**: Process work units via handler, report results
 
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments
+1. Parse CLI arguments (`--host`, `--port`, `--threads`, `--file-dir`, `--max-messages`, `--consumer-id`, `--handler`, `--result-file`)
 2. Generate `consumer_id` (if not provided)
-3. Construct and run `Consumer`
-4. Handle signals
-5. Print statistics
+3. Construct handler based on `--handler` type
+4. Construct result sink if `--result-file` provided
+5. Construct and run `Consumer`
+6. Handle signals via `SignalHandler`
+7. Print statistics on exit
 
-## 7. Network Protocol
+## 8. Network Protocol
 
-### TCP Framing
+### TCP Framing (Control Channel — `--port`)
 
 ```
-┌─────────────┬────────────────────────┐
-│ 4-byte BE   │ N-byte JSON payload    │
-│ uint32_t    │ (UTF-8)                │
-│ (length)    │                        │
-└─────────────┴────────────────────────┘
++-------------+------------------------+
+| 4-byte BE   | N-byte JSON payload    |
+| uint32_t    | (UTF-8)                |
+| (length)    |                        |
++-------------+------------------------+
 ```
 
 ### File Transfer Protocol (port + 1)
 
-**Request (Consumer → Producer):**
+**Request (Consumer -> Producer):**
 ```
-┌──────────┬──────────────────┬──────┐
-│ 0x01     │ filename (UTF-8) │ \0   │
-│ (1 byte) │                  │      │
-└──────────┴──────────────────┴──────┘
-```
-
-**Response (Producer → Consumer):**
-```
-┌──────────────┬──────────────────┐
-│ 4-byte BE    │ file contents    │
-│ uint32_t     │ (raw bytes)      │
-│ (file size)  │                  │
-└──────────────┴──────────────────┘
++--------+--------------------+------+
+| 0x01   | filename (UTF-8)   | \0   |
+| (1B)   |                    |      |
++--------+--------------------+------+
 ```
 
-Zero-byte response means file not found.
+**Response (Producer -> Consumer):**
+```
++--------------+----------------+
+| 4-byte BE    | file contents  |
+| uint32_t     | (raw bytes)    |
+| (file size)  |                |
++--------------+----------------+
+```
 
-## 8. Testing Strategy
+Size `0` means file not found.
 
-| Test File              | What It Tests                          |
-|------------------------|----------------------------------------|
-| `test_message.cpp`     | JSON round-trip for all 3 message types |
-| `test_queue.cpp`       | BoundedQueue concurrency, shutdown     |
-| `test_work_tracker.cpp`| Work unit lifecycle, status transitions |
-| `test_checkpoint.cpp`  | Save/load, backup, resume              |
-| `test_integration.cpp` | Spawn Producer, connect Consumer, verify full cycle |
+### Heartbeat Protocol
 
-## 9. Implementation Order (Recommended)
+- Consumer sends `HeartbeatMessage` every **5 seconds**
+- Producer tracks `last_activity` per consumer in `ConsumerInfo`
+- Monitor thread disconnects consumers idle for **>30 seconds**
+- Heartbeats also update `last_activity` alongside work requests and results
 
-1. **Common library** — `types.h`, `message.h/cpp`, `queue.h/cpp`
-2. **Socket layer** — `socket.h/cpp` with TCP framing
-3. **Signal handler** — `signal_handler.cpp`
-4. **Producer core** — `work_tracker.h/cpp`, `producer.h/cpp`, `main.cpp`
-5. **Consumer core** — `thread_pool.h/cpp`, `consumer.h/cpp`, `main.cpp`
-6. **Checkpoint** — `checkpoint.h/cpp`
-7. **File transfer** — secondary TCP connection
-8. **UDP support** — extend socket layer
-9. **Tests** — unit tests, then integration test
-10. **Polish** — statistics, error handling, edge cases
+### Work Request Throttling
 
-## 10. Known Design Decisions
+- Consumer enforces a **50ms minimum interval** between work requests
+- Tracked via `last_request_time_` (`std::chrono::steady_clock::time_point`)
 
-- IPv4 only — no IPv6 support in Phase 1
-- Big-endian for all network integers (cross-platform consistency)
-- Checkpoint backup written before primary (atomic-ish safety)
-- Consumer thread pool defaults to `std::thread::hardware_concurrency()`
-- Work request throttling: max 1 request per 50ms per consumer connection
-- File transfer on `port + 1` (simple, no multiplexing needed)
-- SHA-256 for file integrity verification
-- `nlohmann::json` for all JSON work (header-only, FetchContent)
+### Duplicate Detection
+
+- Consumer maintains an LRU cache of completed `work_unit_id`s
+- Implementation: `std::list<std::string>` (LRU order) + `std::unordered_set<std::string>` (O(1) lookup)
+- Maximum **3000 entries** — oldest evicted on overflow
+- Protected by `completed_ids_mutex_`
+
+## 9. Adding a New Test Type
+
+1. Create `XXX_plugin.h/cpp` in `src/producer/` implementing `TestPlugin`
+2. Create `XXX_Handler.h/cpp` in `src/consumer/` implementing `IWorkUnitHandler`
+3. Register in `producer.cpp::init_plugin()` — add case for `test_type`
+4. Register in `consumer.cpp` constructor — add case for `handler_type`
+5. Add to `producer_lib` and `consumer_lib` source lists in `CMakeLists.txt`
+
+## 10. Testing Strategy
+
+| Test File                    | Links Against              | What It Tests                          |
+|------------------------------|----------------------------|----------------------------------------|
+| `test_message.cpp`           | `common`                   | JSON round-trip for all 4 message types |
+| `test_queue.cpp`             | `common`                   | BoundedQueue concurrency, shutdown     |
+| `test_work_tracker.cpp`      | `producer_lib`             | Work unit lifecycle, status transitions |
+| `test_checkpoint.cpp`        | `common`                   | Save/load, backup, resume              |
+| `test_integration.cpp`       | `producer_lib`, `consumer_lib` | Producer-Consumer end-to-end       |
+| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering |
+| `test_sha256.cpp`            | `common`                   | RFC 6234 vectors, file hashing         |
+| `test_file_result_sink.cpp`  | `consumer_lib`             | JSON lines output, concurrent writes   |
+
+On Windows, run test executables directly rather than through `ctest` (GTest discovery
+is not reliably supported by `gtest_discover_tests` on all MSVC configurations).
+
+## 11. Known Design Decisions
+
+- **IPv4 only** — no IPv6 support
+- **Big-endian** for all network integers (cross-platform consistency)
+- **Checkpoint backup** written before primary (atomic-ish safety)
+- **Consumer thread pool** defaults to `std::thread::hardware_concurrency()`
+- **Work request throttling**: max 1 request per 50ms per consumer connection
+- **File transfer** on `port + 1` (simple, no multiplexing needed)
+- **SHA-256** for file integrity verification (pure C++ RFC 6234, no external dependency)
+- **`nlohmann::json`** for all JSON work (header-only, FetchContent)
+- **`BoundedQueue`** is a header-only template — `queue.cpp` is empty
+- **`Socket`** uses pimpl to hide platform-specific `SOCKET` vs `int` types
+- **`ssize_t`** typedef in `pc` namespace for Windows compatibility
+- **libarchive** built static with `LIBARCHIVE_STATIC` defined to avoid `__declspec(dllimport)` mismatch

@@ -40,10 +40,12 @@ void Producer::run() {
     running_ = true;
     checkpoint_running_ = true;
     file_transfer_running_ = true;
+    monitor_running_ = true;
 
     checkpoint_thread_ = std::thread(&Producer::checkpoint_loop, this);
     file_transfer_thread_ = std::thread(&Producer::file_transfer_loop, this);
     dispatcher_thread_ = std::thread(&Producer::dispatcher_loop, this);
+    monitor_thread_ = std::thread(&Producer::monitor_connections, this);
 
     server_socket_ = Socket(config_.transport);
     server_socket_.bind("0.0.0.0", config_.port);
@@ -68,6 +70,7 @@ void Producer::run() {
         while (running_ && !SignalHandler::is_stop_requested()) {
             try {
                 Socket client = server_socket_.accept();
+                client.set_recv_timeout(10000);
                 std::thread t([this, c = std::move(client)]() mutable {
                     handle_client(std::move(c));
                 });
@@ -87,6 +90,7 @@ void Producer::shutdown() {
     running_ = false;
     checkpoint_running_ = false;
     file_transfer_running_ = false;
+    monitor_running_ = false;
 
     dispatch_queue_.shutdown();
     result_queue_.shutdown();
@@ -94,6 +98,7 @@ void Producer::shutdown() {
     if (dispatcher_thread_.joinable()) dispatcher_thread_.join();
     if (checkpoint_thread_.joinable()) checkpoint_thread_.join();
     if (file_transfer_thread_.joinable()) file_transfer_thread_.join();
+    if (monitor_thread_.joinable()) monitor_thread_.join();
 
     write_final_checkpoint();
     server_socket_.close();
@@ -214,11 +219,29 @@ void Producer::handle_client(Socket client_socket) {
 
             if (msg_type == "work_request") {
                 WorkRequestMessage req = WorkRequestMessage::from_json(j);
-                consumer_id = req.consumer_id;
+                if (consumer_id.empty()) {
+                    register_consumer(req.consumer_id, client_socket);
+                    consumer_id = req.consumer_id;
+                } else if (req.consumer_id != consumer_id) {
+                    consumer_id = req.consumer_id;
+                }
+                update_consumer_activity(consumer_id);
                 handle_work_request(req, client_socket);
             } else if (msg_type == "result") {
                 ResultMessage result = ResultMessage::from_json(j);
+                if (consumer_id.empty() && !result.consumer_id.empty()) {
+                    register_consumer(result.consumer_id, client_socket);
+                    consumer_id = result.consumer_id;
+                }
+                update_consumer_activity(consumer_id);
                 handle_result(result);
+            } else if (msg_type == "heartbeat") {
+                HeartbeatMessage hb = HeartbeatMessage::from_json(j);
+                if (consumer_id.empty() && !hb.consumer_id.empty()) {
+                    register_consumer(hb.consumer_id, client_socket);
+                    consumer_id = hb.consumer_id;
+                }
+                update_consumer_activity(consumer_id);
             }
         }
     } catch (const std::exception& e) {
@@ -226,7 +249,10 @@ void Producer::handle_client(Socket client_socket) {
     }
 
     if (!consumer_id.empty()) {
-        tracker_.get_failed_for_consumer(consumer_id);
+        auto reclaimed = tracker_.get_failed_for_consumer(consumer_id);
+        std::cout << "[producer] Consumer disconnected: " << consumer_id
+                  << " (reclaimed " << reclaimed.size() << " work units)\n";
+        unregister_consumer(consumer_id);
     }
     client_socket.close();
 }
@@ -273,8 +299,18 @@ void Producer::handle_work_request(const WorkRequestMessage& req, Socket& client
 void Producer::handle_result(const ResultMessage& result) {
     if (result.status == "success") {
         tracker_.mark_completed(result.work_unit_id);
+        if (result.found_password.has_value()) {
+            pwd_set_found(result.found_password.value());
+            std::cout << "[producer] PASSWORD FOUND: " << result.found_password.value() << "\n";
+            running_ = false;
+        }
     } else {
         tracker_.mark_failed(result.work_unit_id);
+        if (result.file_error.has_value()) {
+            pwd_set_file_error(result.file_error.value());
+            std::cerr << "[producer] FILE ERROR: " << result.file_error.value() << "\n";
+            running_ = false;
+        }
     }
 }
 
@@ -317,6 +353,14 @@ void Producer::print_statistics() {
     std::cout << "Work units completed:  " << tracker_.completed_count() << "\n";
     std::cout << "Work units failed:     " << tracker_.failed_count() << "\n";
     std::cout << "Work units pending:    " << tracker_.pending_count() << "\n";
+    if (test_type_ == "PWD") {
+        if (!pwd_get_found_password().empty()) {
+            std::cout << "Password found:        " << pwd_get_found_password() << "\n";
+        }
+        if (!pwd_get_file_error().empty()) {
+            std::cout << "File error:            " << pwd_get_file_error() << "\n";
+        }
+    }
     std::cout << "=========================\n";
 }
 
@@ -346,6 +390,7 @@ void Producer::file_transfer_loop() {
     while (file_transfer_running_ && !SignalHandler::is_stop_requested()) {
         try {
             Socket client = file_transfer_socket_.accept();
+            client.set_recv_timeout(10000);
             std::thread t([this, c = std::move(client)]() mutable {
                 handle_file_transfer(std::move(c));
             });
@@ -435,6 +480,77 @@ void Producer::handle_file_transfer(Socket client_socket) {
         std::cerr << "[producer] File transfer error: " << e.what() << "\n";
     }
     client_socket.close();
+}
+
+void Producer::register_consumer(const std::string& consumer_id, Socket& socket) {
+    std::lock_guard<std::mutex> lock(consumers_mutex_);
+    auto it = connected_consumers_.find(consumer_id);
+    if (it == connected_consumers_.end()) {
+        ConsumerInfo info;
+        info.socket = &socket;
+        info.last_activity = std::chrono::steady_clock::now();
+        info.registered_at = info.last_activity;
+        connected_consumers_[consumer_id] = std::move(info);
+        std::cout << "[producer] Consumer registered: " << consumer_id
+                  << " (total: " << connected_consumers_.size() << ")\n";
+    } else {
+        it->second.socket = &socket;
+        it->second.last_activity = std::chrono::steady_clock::now();
+    }
+}
+
+void Producer::unregister_consumer(const std::string& consumer_id) {
+    std::lock_guard<std::mutex> lock(consumers_mutex_);
+    connected_consumers_.erase(consumer_id);
+}
+
+void Producer::update_consumer_activity(const std::string& consumer_id) {
+    std::lock_guard<std::mutex> lock(consumers_mutex_);
+    auto it = connected_consumers_.find(consumer_id);
+    if (it != connected_consumers_.end()) {
+        it->second.last_activity = std::chrono::steady_clock::now();
+    }
+}
+
+void Producer::monitor_connections() {
+    constexpr int kHeartbeatTimeoutSec = 30;
+    constexpr int kCheckIntervalSec = 5;
+
+    while (monitor_running_) {
+        std::this_thread::sleep_for(std::chrono::seconds(kCheckIntervalSec));
+
+        if (!monitor_running_) break;
+
+        auto now = std::chrono::steady_clock::now();
+        std::vector<std::string> stale;
+
+        {
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            for (auto& [id, info] : connected_consumers_) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - info.last_activity).count();
+                if (elapsed >= kHeartbeatTimeoutSec) {
+                    stale.push_back(id);
+                }
+            }
+        }
+
+        for (const auto& id : stale) {
+            std::cout << "[producer] Consumer stale (no activity for "
+                      << kHeartbeatTimeoutSec << "s): " << id << "\n";
+
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            auto it = connected_consumers_.find(id);
+            if (it != connected_consumers_.end() && it->second.socket) {
+                it->second.socket->close();
+            }
+
+            auto reclaimed = tracker_.get_failed_for_consumer(id);
+            std::cout << "[producer] Reclaimed " << reclaimed.size()
+                      << " work units from stale consumer " << id << "\n";
+            connected_consumers_.erase(it);
+        }
+    }
 }
 
 } // namespace pc

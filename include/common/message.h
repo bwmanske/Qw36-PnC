@@ -33,6 +33,8 @@ struct ResultMessage {
     std::string status;
     nlohmann::json result;
     std::string timestamp;
+    std::optional<std::string> found_password;
+    std::optional<std::string> file_error;
 
     nlohmann::json to_json() const;
     static ResultMessage from_json(const nlohmann::json& j);
@@ -49,6 +51,16 @@ struct WorkRequestMessage {
     static WorkRequestMessage from_json(const nlohmann::json& j);
     std::string to_string() const;
     static WorkRequestMessage from_string(const std::string& s);
+};
+
+struct HeartbeatMessage {
+    std::string consumer_id;
+    std::string timestamp;
+
+    nlohmann::json to_json() const;
+    static HeartbeatMessage from_json(const nlohmann::json& j);
+    std::string to_string() const;
+    static HeartbeatMessage from_string(const std::string& s);
 };
 
 } // namespace pc

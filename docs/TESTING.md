@@ -11,6 +11,9 @@ build\tests\Release\test_queue.exe
 build\tests\Release\test_work_tracker.exe
 build\tests\Release\test_checkpoint.exe
 build\tests\Release\test_integration.exe
+build\tests\Release\test_pwd_next_unit.exe
+build\tests\Release\test_sha256.exe
+build\tests\Release\test_file_result_sink.exe
 ```
 
 ## Test Suite Overview
@@ -22,7 +25,10 @@ build\tests\Release\test_integration.exe
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 6 | `common` |
 | `test_integration` | `test_integration.exe` | 4 | `producer_lib`, `consumer_lib` |
-| **Total** | | **34** | |
+| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 20 | `producer_lib` |
+| `test_sha256` | `test_sha256.exe` | 8 | `common` |
+| `test_file_result_sink` | `test_file_result_sink.exe` | 5 | `consumer_lib` |
+| **Total** | | **67** | |
 
 ---
 
@@ -120,18 +126,112 @@ build\tests\Release\test_integration.exe
 
 ---
 
+## test_pwd_next_unit (20 tests)
+
+### PWD_NextUnit — Lowercase-only
+
+| Test | What It Verifies |
+|------|-----------------|
+| `LowerAlpha_FirstChar` | First `setNext()` returns `"a"` |
+| `LowerAlpha_Sequence` | First five passwords are `"a"`, `"b"`, `"c"`, `"d"`, `"e"` in order |
+| `LowerAlpha_WrapsToTwoChars` | After exhausting `"a"`–`"z"` (26 calls), next password is `"aa"` |
+| `LowerAlpha_TwoCharProgression` | Two-char sequence starts `"aa"`, `"ab"` (rightmost char changes fastest) |
+| `LowerAlpha_Done` | 1000 consecutive calls all return `PERMUTE_SUCCESS` with valid lowercase-only passwords |
+
+### PWD_NextUnit — Multi-character-set
+
+| Test | What It Verifies |
+|------|-----------------|
+| `AllSets_FirstChar` | With all 4 sets enabled, first password is still `"a"` |
+| `NumericOnly` | Numeric-only mode produces `"0"`, `"1"`, ... |
+| `NonAlphaOnly` | Non-alpha-only mode starts with `"~"` (first char in `nonAlpha[]`) |
+| `NoOptions_ReturnsError` | With no character sets enabled, `setNext()` returns `PERMUTE_NO_OPTION` |
+| `UpperAndLower_Transition` | After exhausting lowercase `"a"`–`"z"`, next password is `"A"` (transitions to uppercase) |
+
+### PWD_NextUnit — Output formatting
+
+| Test | What It Verifies |
+|------|-----------------|
+| `pwdAsIndicies_Format` | `get_pwdAsIndicies()` returns `"len,idx[N-1],...,idx[0]"` format (high index first) |
+| `pwdAsText_ContainsChar` | `get_pwdAsText()` output contains the expected character |
+| `PlainPassword_NotNull` | `get_plainPassword()` returns non-null after successful `setNext()` |
+| `PasswordLength_Increases` | `testPwdLen` increases from 1 to 2 after exhausting single-char permutations |
+
+### PWD_NextUnit — Character set completeness
+
+| Test | What It Verifies |
+|------|-----------------|
+| `NonAlpha_ContainsCaret` | The `^` (caret) character is present in the `nonAlpha[]` array (NA_COUNT = 24) |
+
+### PWD_NextUnit — Checkpoint resume
+
+| Test | What It Verifies |
+|------|-----------------|
+| `ResumeViaIndicies` | Saving `charIndicies` and `testPwdLen`, restoring in a new generator, and calling `setNext()` produces the next password in sequence |
+
+### PWD_NextUnit — Reverse ordering (index 0 = rightmost)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `TwoChar_RightmostChangesFastest` | Two-char sequence is `"aa"`, `"ab"`, `"ac"`, `"ad"` — rightmost character increments fastest (standard odometer behavior) |
+| `TwoChar_az_to_ba` | After `"az"`, rightmost wraps to `'a'` and leftmost increments → `"ba"` |
+| `TwoChar_FullCycle` | All 676 two-char permutations (`"aa"` through `"zz"`) are generated; next is three-char `"aaa"` |
+| `Indicies_Match_Reversed_String` | `get_pwdAsIndicies()` output `"2,0,3"` matches `charIndicies[1]=0` (left='a'), `charIndicies[0]=3` (right='d') → password `"ad"` |
+
+---
+
+## test_sha256 (8 tests)
+
+### SHA-256 — RFC 6234 vectors
+
+| Test | What It Verifies |
+|------|-----------------|
+| `EmptyString` | `sha256_bytes(nullptr, 0)` returns the known hash for empty input: `e3b0c442...` |
+| `RFC6234_abc` | `sha256_bytes("abc", 3)` matches RFC 6234 Appendix A: `ba7816bf...` |
+| `RFC6234_abcabc` | 64-byte message `"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"` matches RFC 6234: `248d6a61...` |
+| `RFC6234_a_repeated_1million` | 1,000,000 `'a'` bytes match RFC 6234: `cdc76f52...` (**PENDING** — implementation produces `cdc76e5c...`, bug under investigation) |
+
+### SHA-256 — File hashing
+
+| Test | What It Verifies |
+|------|-----------------|
+| `FileHash_MatchesBytes` | `sha256_file(path)` produces the same hash as `sha256_bytes()` for the same content |
+| `FileHash_MissingFile` | `sha256_file()` returns empty string for a non-existent file |
+| `FileHash_EmptyFile` | `sha256_file()` on an empty file returns the SHA-256 of empty input |
+
+### Platform utilities
+
+| Test | What It Verifies |
+|------|-----------------|
+| `GetDataDirectory` | `get_data_directory()` returns a non-empty path that exists and is a directory |
+
+---
+
+## test_file_result_sink (5 tests)
+
+### FileResultSink
+
+| Test | What It Verifies |
+|------|-----------------|
+| `WritesJsonLines` | `on_result()` writes a single JSON line to disk with `msg_type`, `status`, and `sink_stats` fields |
+| `CountsSuccessesAndFailures` | After 3 results (2 success, 1 failure), `summary()` returns `total=3`, `successes=2`, `failures=1` |
+| `ConcurrentWrites` | 10 threads each writing 1 result produces exactly 10 lines in the output file (thread-safe) |
+| `ShouldStop` | `should_stop()` always returns `false` |
+| `Summary_FilePath` | `summary()["file"]` matches the constructor's `file_path` argument |
+
+---
+
 ## What Is NOT Covered (Manual / Future)
 
 The following require running the actual executables or network connectivity:
 
 - File transfer protocol over `port + 1`
-- SHA-256 hash computation and verification
 - TCP/UDP socket framing (`send_frame` / `recv_frame`)
 - Signal handling and graceful shutdown
 - Producer-consumer end-to-end communication
 - Thread pool execution and handler dispatch
-- `PWD_NextUnit` permutation logic
 - `PWD_Handler` processing
+- `ArchiveValidator` with real archive files
 - Multi-consumer connections and re-dispatch
 - Work request throttling
-- Checkpoint data directory (`get_data_directory()`)
+- Heartbeat protocol and consumer registration

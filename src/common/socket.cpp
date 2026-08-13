@@ -146,9 +146,29 @@ ssize_t Socket::recv_data(uint8_t* buffer, size_t maxlen) {
     if (!impl_->open) return -1;
 #ifdef _WIN32
     int received = ::recv(impl_->sock, reinterpret_cast<char*>(buffer), static_cast<int>(maxlen), 0);
-    return received == SOCKET_ERROR ? -1 : received;
+    if (received == SOCKET_ERROR) {
+        if (WSAGetLastError() == WSAETIMEDOUT) return -2;
+        return -1;
+    }
+    return received;
 #else
-    return ::recv(impl_->sock, buffer, maxlen, 0);
+    int received = ::recv(impl_->sock, buffer, maxlen, 0);
+    if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return -2;
+    return received;
+#endif
+}
+
+void Socket::set_recv_timeout(int milliseconds) {
+    if (!impl_->valid()) return;
+#ifdef _WIN32
+    int timeout = milliseconds;
+    ::setsockopt(impl_->sock, SOL_SOCKET, SO_RCVTIMEO,
+                 reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+#else
+    timeval tv;
+    tv.tv_sec = milliseconds / 1000;
+    tv.tv_usec = (milliseconds % 1000) * 1000;
+    ::setsockopt(impl_->sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 #endif
 }
 
@@ -223,6 +243,7 @@ static size_t read_exact(Socket& sock, uint8_t* buffer, size_t len) {
     size_t offset = 0;
     while (offset < len) {
         ssize_t n = sock.recv_data(buffer + offset, len - offset);
+        if (n == -2) throw std::runtime_error("Socket recv timeout");
         if (n <= 0) return offset;
         offset += static_cast<size_t>(n);
     }

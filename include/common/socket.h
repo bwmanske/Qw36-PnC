@@ -34,6 +34,7 @@ public:
 
     ssize_t send_data(const uint8_t* data, size_t len);
     ssize_t recv_data(uint8_t* buffer, size_t maxlen);
+    void set_recv_timeout(int milliseconds);
 
     ssize_t send_to(const std::string& address, uint16_t port,
                     const uint8_t* data, size_t len);

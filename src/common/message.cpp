@@ -59,6 +59,10 @@ nlohmann::json ResultMessage::to_json() const {
     j["status"] = status;
     j["result"] = result;
     j["timestamp"] = timestamp;
+    if (found_password.has_value())
+        j["found_password"] = found_password.value();
+    if (file_error.has_value())
+        j["file_error"] = file_error.value();
     return j;
 }
 
@@ -70,6 +74,10 @@ ResultMessage ResultMessage::from_json(const nlohmann::json& j) {
     msg.status = j.value("status", "");
     msg.result = j.value("result", nlohmann::json::object());
     msg.timestamp = j.value("timestamp", "");
+    if (j.contains("found_password"))
+        msg.found_password = j["found_password"].get<std::string>();
+    if (j.contains("file_error"))
+        msg.file_error = j["file_error"].get<std::string>();
     return msg;
 }
 
@@ -105,6 +113,31 @@ std::string WorkRequestMessage::to_string() const {
 }
 
 WorkRequestMessage WorkRequestMessage::from_string(const std::string& s) {
+    return from_json(nlohmann::json::parse(s));
+}
+
+// ── HeartbeatMessage ─────────────────────────────────────────────
+
+nlohmann::json HeartbeatMessage::to_json() const {
+    nlohmann::json j;
+    j["msg_type"] = "heartbeat";
+    j["consumer_id"] = consumer_id;
+    j["timestamp"] = timestamp;
+    return j;
+}
+
+HeartbeatMessage HeartbeatMessage::from_json(const nlohmann::json& j) {
+    HeartbeatMessage msg;
+    msg.consumer_id = j.value("consumer_id", "");
+    msg.timestamp = j.value("timestamp", "");
+    return msg;
+}
+
+std::string HeartbeatMessage::to_string() const {
+    return to_json().dump();
+}
+
+HeartbeatMessage HeartbeatMessage::from_string(const std::string& s) {
     return from_json(nlohmann::json::parse(s));
 }
 

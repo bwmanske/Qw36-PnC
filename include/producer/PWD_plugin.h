@@ -6,6 +6,10 @@
 namespace pc {
 
 pc::TestPlugin create_pwd_plugin();
+void pwd_set_found(const std::string& password);
+void pwd_set_file_error(const std::string& msg);
+const std::string& pwd_get_found_password();
+const std::string& pwd_get_file_error();
 
 } // namespace pc
 

@@ -21,3 +21,16 @@ gtest_discover_tests(test_checkpoint)
 add_executable(test_integration test_integration.cpp)
 target_link_libraries(test_integration PRIVATE producer_lib consumer_lib GTest::gtest_main)
 gtest_discover_tests(test_integration)
+
+add_executable(test_pwd_next_unit test_pwd_next_unit.cpp)
+target_include_directories(test_pwd_next_unit PRIVATE ../src/producer)
+target_link_libraries(test_pwd_next_unit PRIVATE producer_lib GTest::gtest_main)
+gtest_discover_tests(test_pwd_next_unit)
+
+add_executable(test_sha256 test_sha256.cpp)
+target_link_libraries(test_sha256 PRIVATE common GTest::gtest_main)
+gtest_discover_tests(test_sha256)
+
+add_executable(test_file_result_sink test_file_result_sink.cpp)
+target_link_libraries(test_file_result_sink PRIVATE consumer_lib GTest::gtest_main)
+gtest_discover_tests(test_file_result_sink)

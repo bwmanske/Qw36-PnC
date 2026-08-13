@@ -9,6 +9,7 @@
 #include "common/util.h"
 #include "consumer/PWD_Handler.h"
 #include "consumer/BENCH_Handler.h"
+#include "consumer/file_result_sink.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -33,6 +34,11 @@ Consumer::Consumer(const ConsumerConfig& config)
     } else if (config.handler_type == "BENCH") {
         handler_ = std::make_shared<BENCH_Handler>();
     }
+
+    if (!config.result_file.empty()) {
+        sink_ = std::make_shared<FileResultSink>(config.result_file);
+        std::cout << "[consumer] Result sink: file=" << config.result_file << "\n";
+    }
 }
 
 Consumer::~Consumer() {
@@ -55,6 +61,9 @@ void Consumer::run() {
     // Start receiver thread
     receiver_thread_ = std::thread(&Consumer::receiver_loop, this);
 
+    // Start heartbeat thread
+    heartbeat_thread_ = std::thread(&Consumer::heartbeat_loop, this);
+
     // Wait for stop signal or max messages
     while (running_) {
         if (SignalHandler::is_stop_requested()) break;
@@ -76,6 +85,7 @@ void Consumer::shutdown() {
     work_queue_.shutdown();
 
     if (receiver_thread_.joinable()) receiver_thread_.join();
+    if (heartbeat_thread_.joinable()) heartbeat_thread_.join();
 
     client_socket_.close();
     print_statistics();
@@ -90,6 +100,7 @@ void Consumer::connect_to_producer() {
             client_socket_ = Socket(config_.transport);
             std::string host = config_.local ? "127.0.0.1" : config_.host;
             client_socket_.connect(host, config_.port);
+            client_socket_.set_recv_timeout(10000);
             std::cout << "[consumer] Connected to " << host << ":" << config_.port << "\n";
 
             // Send initial work request
@@ -227,6 +238,7 @@ void Consumer::download_source_file(const std::string& source_file, const std::s
     try {
         Socket file_socket(Transport::TCP);
         file_socket.connect(host, file_port);
+        file_socket.set_recv_timeout(30000);
 
         // Send request: 0x01 + null-terminated filename
         std::vector<uint8_t> request;
@@ -329,6 +341,14 @@ void Consumer::print_statistics() {
     std::cout << "Consumer ID:             " << consumer_id_ << "\n";
     if (first_seq_ >= 0)
         std::cout << "Sequence range:          " << first_seq_ << " - " << last_seq_ << "\n";
+    if (sink_) {
+        auto s = sink_->summary();
+        std::cout << "Result sink:             " << s.value("type", "unknown")
+                  << " file=" << s.value("file", "none")
+                  << " total=" << s.value("total", 0)
+                  << " ok=" << s.value("successes", 0)
+                  << " fail=" << s.value("failures", 0) << "\n";
+    }
     std::cout << "===========================\n";
 }
 
@@ -384,6 +404,24 @@ void Consumer::mark_completed(const std::string& work_unit_id) {
         std::string oldest = completed_ids_lru_.back();
         completed_ids_lru_.pop_back();
         completed_ids_set_.erase(oldest);
+    }
+}
+
+void Consumer::heartbeat_loop() {
+    constexpr int kIntervalSec = 5;
+    while (running_ && client_socket_.is_open()) {
+        std::this_thread::sleep_for(std::chrono::seconds(kIntervalSec));
+        if (!running_ || !client_socket_.is_open()) break;
+
+        HeartbeatMessage hb;
+        hb.consumer_id = consumer_id_;
+        hb.timestamp = now_iso();
+        try {
+            send_frame(client_socket_, hb.to_string());
+        } catch (const std::exception& e) {
+            std::cerr << "[consumer] Heartbeat send failed: " << e.what() << "\n";
+            break;
+        }
     }
 }
 

@@ -5,7 +5,7 @@
 #define MAX_PWD_LEN        10
 #define LA_COUNT           26
 #define UA_COUNT           26
-#define NA_COUNT           23
+#define NA_COUNT           24
 #define NUM_COUNT          10
 #define RANGE_LA_LOWER      0
 #define RANGE_LA_UPPER     (LA_COUNT - 1)
@@ -31,9 +31,8 @@ private:
 								        'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z' };
 	const char numeric[NUM_COUNT] =   { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
 	const char nonAlpha[NA_COUNT] =   { '~', '-', '=', '_', '$', '%', '+', '.', ';', ':', '[', '(', '{',
-	                                    '}', ')', ']', '?', '@', '!', '#', '`', '*', ',' };
-	// S quote, D quote, question, F slash, B slash, at, exclamation, number, grave, caret, ampersand, astrisk, comma, greater, less
-	// removed  S quote, D quote, F slash, B slash, ampersand, greater, less, vertical
+	                                    '}', ')', ']', '?', '@', '!', '#', '`', '^', '*', ',' };
+	// removed: S quote, D quote, F slash, B slash, ampersand, greater, less, vertical
 	char  testPassword[MAX_PWD_LEN + 1];
 	int   testPwdLen;
 	int   charIndicies[MAX_PWD_LEN];

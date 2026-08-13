@@ -4,6 +4,7 @@
 #include <iostream>
 #include <sstream>
 #include <cstring>
+#include <atomic>
 
 namespace pc {
 
@@ -18,6 +19,28 @@ struct PWDState {
 };
 
 static PWDState* g_pwd_state = nullptr;
+static std::atomic<bool> g_password_found{false};
+static std::string g_found_password;
+static std::atomic<bool> g_file_error{false};
+static std::string g_file_error_msg;
+
+void pwd_set_found(const std::string& password) {
+    g_found_password = password;
+    g_password_found = true;
+}
+
+void pwd_set_file_error(const std::string& msg) {
+    g_file_error_msg = msg;
+    g_file_error = true;
+}
+
+const std::string& pwd_get_found_password() {
+    return g_found_password;
+}
+
+const std::string& pwd_get_file_error() {
+    return g_file_error_msg;
+}
 
 pc::TestPlugin create_pwd_plugin() {
     pc::TestPlugin plugin;
@@ -155,7 +178,7 @@ pc::TestPlugin create_pwd_plugin() {
     };
 
     plugin.exit_conditions = []() {
-        return false;
+        return g_password_found.load() || g_file_error.load();
     };
 
     return plugin;

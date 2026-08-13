@@ -15,6 +15,9 @@ build\tests\Release\test_queue.exe
 build\tests\Release\test_work_tracker.exe
 build\tests\Release\test_checkpoint.exe
 build\tests\Release\test_integration.exe
+build\tests\Release\test_pwd_next_unit.exe
+build\tests\Release\test_sha256.exe
+build\tests\Release\test_file_result_sink.exe
 ```
 
 ## MSVC Gotchas
@@ -28,9 +31,9 @@ build\tests\Release\test_integration.exe
 
 | Layer | Targets | Purpose |
 |-------|---------|---------|
-| `common` | `common` (static lib) | Sockets, messages, queue, checkpoint, SHA-256, signal handling |
+| `common` | `common` (static lib) | Sockets, messages, queue, checkpoint, SHA-256, signal handling, archive_validator |
 | `producer_lib` | `producer_lib` (static lib) | Producer logic, work tracker, PWD_NextUnit, PWD/BENCH plugins |
-| `consumer_lib` | `consumer_lib` (static lib) | Consumer logic, thread pool, PWD/BENCH handlers |
+| `consumer_lib` | `consumer_lib` (static lib) | Consumer logic, thread pool, PWD/BENCH handlers, FileResultSink |
 | Exe | `producer`, `consumer` | CLI entry points |
 
 Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the executables.

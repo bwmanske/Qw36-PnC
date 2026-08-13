@@ -29,6 +29,7 @@ struct ConsumerConfig {
     std::string gateway = "192.168.1.1";
     std::string consumer_id = "";
     std::string handler_type = "";
+    std::string result_file = "";
 };
 
 class Consumer {
@@ -46,6 +47,7 @@ private:
     void send_work_request(int threads_available);
     void send_result(const ResultMessage& result);
     void print_statistics();
+    void heartbeat_loop();
     std::string generate_consumer_id();
     std::string now_iso();
     std::string compute_sha256(const std::string& path);
@@ -63,6 +65,7 @@ private:
     std::atomic<bool> file_ready_{false};
 
     std::thread receiver_thread_;
+    std::thread heartbeat_thread_;
 
     int64_t total_received_ = 0;
     int64_t total_discarded_ = 0;

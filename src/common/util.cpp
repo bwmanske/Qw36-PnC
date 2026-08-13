@@ -107,7 +107,7 @@ std::string sha256_bytes(const uint8_t* data, size_t len) {
     // Padding
     uint64_t bitlen = static_cast<uint64_t>(len) * 8;
     block[buffered++] = 0x80;
-    if (buffered > 56) {
+    if (buffered >= 56) {
         std::memset(block + buffered, 0, 64 - buffered);
         flush_block();
     }
@@ -180,7 +180,7 @@ std::string sha256_file(const std::string& path) {
     // Padding
     uint64_t bitlen = total * 8;
     block[buffered++] = 0x80;
-    if (buffered > 56) {
+    if (buffered >= 56) {
         std::memset(block + buffered, 0, 64 - buffered);
         flush_block();
     }

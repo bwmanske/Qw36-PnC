@@ -3,30 +3,31 @@
 ## 1. Overview
 
 A multi-threaded Producer-Consumer system implemented in C++17, built with CMake.
-The Producer reads a job file, applies a test data permutation, tracks all sent
-work units, and dispatches them over the network to one or more Consumers.
-Consumers process work units using a thread pool and return results. The Producer
-removes completed work units from its pending list and persists checkpoint state
-so it can resume after shutdown.
+The Producer reads a JSON configuration file, initializes a test plugin (PWD or BENCH),
+generates work units, and dispatches them over the network to one or more Consumers.
+Consumers process work units using a pluggable handler and a thread pool, then return
+results. The Producer tracks all sent work units, validates results, and persists
+checkpoint state so it can resume after shutdown.
 
 Both roles share a common source tree with `#ifdef` conditionals to produce
 Windows and Linux binaries from the same files.
 
-Detailed specifications:
-- [`Producer-Spec.md`](./Producer-Spec.md)
-- [`Consumer-Spec.md`](./Consumer-Spec.md)
+The system uses a plugin architecture: the Producer dispatches through a `TestPlugin`
+table, and the Consumer processes through an `IWorkUnitHandler` interface. Results
+are persisted through an `IResultSink` interface.
 
 ## 2. Buildables
 
-| # | Target             | Platform | CMake Target Name |
-|---|--------------------|----------|-------------------|
-| 1 | Producer CLI       | Windows  | `producer_win`    |
-| 2 | Producer CLI       | Linux    | `producer_linux`  |
-| 3 | Consumer CLI       | Windows  | `consumer_win`    |
-| 4 | Consumer CLI       | Linux    | `consumer_linux`  |
+| # | Target             | Type       | CMake Target Name |
+|---|--------------------|------------|-------------------|
+| 1 | Common library     | Static lib | `common`          |
+| 2 | Producer library   | Static lib | `producer_lib`    |
+| 3 | Consumer library   | Static lib | `consumer_lib`    |
+| 4 | Producer CLI       | Executable | `producer`        |
+| 5 | Consumer CLI       | Executable | `consumer`        |
 
-CMake selects the appropriate target based on `CMAKE_SYSTEM_NAME`.
-Cross-compilation is not required for Phase 1.
+Single CMake target names — no platform-specific suffixes. CMake selects the
+appropriate platform behavior via `#ifdef _WIN32` / `#else` in the source files.
 
 ## 3. Communication
 
@@ -39,25 +40,36 @@ Cross-compilation is not required for Phase 1.
   - 4-byte big-endian `uint32_t` frame length (payload bytes only, excludes header)
   - N-byte JSON payload (UTF-8)
 - **Multi-Consumer**: Producer accepts simultaneous TCP connections from any
-  number of Consumers, each on its own I/O thread.
-- **File transfer**: Secondary TCP connection on `port + 1` for Consumer to
-  download the source job file from the Producer.
+  number of Consumers, each on its own detached I/O thread.
+- **File transfer**: Secondary TCP connection on `port + 1`. Consumer sends
+  `0x01` + null-terminated filename. Producer responds with 4-byte big-endian
+  file size + raw bytes. Size `0` means file not found.
+- **Socket recv timeout**: 10 s on control channel, 30 s on file transfer channel.
+- **Consumer registration**: Producer tracks connected consumers via
+  `connected_consumers_` map. Logs registration and disconnect events with
+  reclaimed work unit count.
+- **Work request throttling**: Consumer limits work requests to max 1 per 50 ms.
+- **Duplicate tracking**: Consumer maintains an LRU cache of 3000 completed
+  `work_unit_id` values to detect and discard duplicate work units.
 
 ## 4. Message Types
 
-Three message types flow between Producer and Consumer:
+Four message types flow between Producer and Consumer:
 
 ### Work Unit (Producer → Consumer)
 
 ```json
 {
   "msg_type": "work_unit",
-  "source_file": "/path/to/jobs.json",
-  "permutation": "random",
+  "test_type": "PWD",
+  "source_file": "data.bin",
+  "permutation": "sequential",
+  "permutation_seed": 12345,
   "work_unit_id": "prod-001-42",
   "seq": 42,
   "timestamp": "2026-07-30T12:00:00.000Z",
   "producer_id": "prod-001",
+  "source_hash": "abc123...",
   "job": { "job_id": 1, "task": "render", "params": { ... } }
 }
 ```
@@ -72,9 +84,15 @@ Three message types flow between Producer and Consumer:
   "consumer_id": "cons-001",
   "status": "success",
   "result": { "output": "...", "duration_ms": 1250 },
-  "timestamp": "2026-07-30T12:00:01.250Z"
+  "timestamp": "2026-07-30T12:00:01.250Z",
+  "found_password": "correct-horse",
+  "file_error": "corrupted archive"
 }
 ```
+
+The `found_password` and `file_error` fields are optional. When `found_password`
+is present, the Producer stops dispatching. When `file_error` is present, the
+Producer logs the error and stops.
 
 ### Work Request (Consumer → Producer)
 
@@ -87,9 +105,24 @@ Three message types flow between Producer and Consumer:
 }
 ```
 
+### Heartbeat (Consumer → Producer)
+
+```json
+{
+  "msg_type": "heartbeat",
+  "consumer_id": "cons-001",
+  "timestamp": "2026-07-30T12:00:05.000Z"
+}
+```
+
+Consumer sends a heartbeat every 5 seconds. The Producer's connection monitor
+checks every 5 seconds and detects stale connections after 30 seconds of no
+activity. Stale consumers have their sockets closed and their in-flight work
+units reclaimed.
+
 ## 5. Work Unit Lifecycle
 
-1. **`pending`** — Job is in the permuted list, not yet dispatched.
+1. **`pending`** — Job is generated by the plugin, not yet dispatched.
 2. **`sent`** — Job sent to a Consumer; Producer waits for a result.
 3. **`completed`** — Consumer returned `status: "success"`; removed from pending list.
 4. **`failed`** — Consumer returned `status: "failure"` or disconnected; returned to `pending` for re-dispatch.
@@ -100,19 +133,21 @@ Three message types flow between Producer and Consumer:
 
 | Thread                  | Count | Responsibility                              |
 |-------------------------|-------|---------------------------------------------|
-| Main                    | 1     | CLI, lifecycle, signals, checkpoint timer   |
-| Dispatcher              | 1     | Job list, work unit tracking, result processing |
-| I/O                     | N     | 1 per Consumer connection, read/write frames |
+| Main                    | 1     | CLI, accept loop, lifecycle, signals        |
+| Dispatcher              | 1     | Plugin exit conditions, max units, duration |
 | Checkpoint              | 1     | Writes state.json + backup every 60s        |
+| File transfer           | 1     | Accepts file transfer connections on port+1 |
+| Monitor connections     | 1     | Detects stale consumers, reclaims work units|
+| Client handler          | N     | 1 detached thread per Consumer connection   |
 
 ### Consumer
 
 | Thread                  | Count        | Responsibility                              |
 |-------------------------|--------------|---------------------------------------------|
-| Main                    | 1            | CLI, lifecycle, signals, file download      |
+| Main                    | 1            | CLI, lifecycle, signals, max-messages check |
 | Receiver                | 1            | Read frames, validate, push to work queue   |
-| Pool                    | 1 per core   | Pop work units, process, send results       |
-| File transfer           | 1 (on demand)| Download source file from Producer          |
+| Heartbeat               | 1            | Sends heartbeat every 5s                    |
+| Pool                    | 1 per core   | Pop work units, process via handler, send results |
 
 ## 7. Checkpoint State
 
@@ -122,20 +157,29 @@ The Producer persists state so it can resume after shutdown:
 - **Backup**: `--checkpoint-dir/state.backup.json`
 - **Schedule**: Every 60 seconds + immediately on graceful shutdown
 - **Resume**: `--resume` flag re-applies permutation, skips to `last_completed_seq`
+- **Default directory**: `%APPDATA%\Producer\` (Windows), `~/.local/share/producer/` (Linux)
+  via `get_data_directory()` from `common/util.h`
 
 ```json
 {
   "producer_id": "prod-001",
-  "source_file": "/path/to/jobs.json",
-  "permutation": "random",
+  "source_file": "data.bin",
+  "permutation": "sequential",
   "permutation_seed": 12345,
   "total_jobs": 1000,
   "last_completed_seq": 42,
+  "last_completed_work_unit_id": "prod-001-42",
   "completed_count": 42,
   "pending_count": 958,
-  "checkpoint_timestamp": "2026-07-30T12:05:00.000Z"
+  "failed_count": 0,
+  "checkpoint_timestamp": "2026-07-30T12:05:00.000Z",
+  "consumers_connected": [],
+  "plugin_state": { ... }
 }
 ```
+
+The `plugin_state` field holds plugin-specific resume data (e.g., PWD permutation
+state, BENCH chunk offset).
 
 ## 8. Platform Conditionals
 
@@ -155,44 +199,49 @@ Areas requiring conditionals:
 - Thread naming (optional, platform-specific)
 - File path separators (use `std::filesystem` where possible)
 - Hostname retrieval (`GetComputerNameEx` vs. `gethostname`)
+- `ssize_t` typedef (not defined on Windows — provided in `socket.h`)
+- `NOMINMAX` must be `#define`d before `<windows.h>` to prevent `min`/`max` macro conflicts
 
 ## 9. CLI Interface
 
 ### Producer
 
 ```
-producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [--seed N] [--duration SECONDS] [--gateway IP] [--checkpoint-dir DIR] [--resume]
+producer --file PATH [OPTIONS]
 ```
 
-| Flag             | Default        | Description                                      |
-|------------------|----------------|--------------------------------------------------|
-| `--file`         | *(required)*   | Path to the job file (JSON array or NDJSON)      |
-| `--port`         | 9876           | Port to bind on                                  |
-| `--transport`    | `tcp`          | Transport protocol (`tcp` or `udp`)              |
-| `--permutation`  | `sequential`   | Job permutation mode                             |
-| `--seed`         | (current time) | PRNG seed for `random` permutation               |
-| `--duration`     | 0              | Run duration in seconds (0 = run until done)     |
-| `--gateway`      | 192.168.1.1    | Default local gateway IPv4 address               |
-| `--checkpoint-dir`| `./`          | Directory for checkpoint state files             |
-| `--resume`       | false          | Resume from checkpoint if one exists             |
+| Flag               | Default        | Description                                      |
+|--------------------|----------------|--------------------------------------------------|
+| `--file`           | *(required)*   | Path to the main JSON config file                |
+| `--port`           | 9876           | Port to bind on                                  |
+| `--transport`      | `tcp`          | Transport protocol (`tcp` or `udp`)              |
+| `--permutation`    | `sequential`   | Job permutation mode                             |
+| `--seed`           | (current time) | PRNG seed for `random` permutation               |
+| `--duration`       | 0              | Run duration in seconds (0 = run until done)     |
+| `--gateway`        | 192.168.1.1    | Default local gateway IPv4 address               |
+| `--checkpoint-dir`| (data dir)     | Directory for checkpoint state files             |
+| `--resume`         | false          | Resume from checkpoint if one exists             |
+| `--test-type`      | (from config)  | Test type identifier (e.g. PWD, BENCH)           |
 
 ### Consumer
 
 ```
-consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file-dir DIR] [--max-messages N] [--local] [--gateway IP] [--consumer-id ID]
+consumer [OPTIONS]
 ```
 
-| Flag           | Default            | Description                                      |
-|----------------|--------------------|--------------------------------------------------|
-| `--host`       | 127.0.0.1          | Producer host IPv4 address                       |
-| `--port`       | 9876               | Producer port                                    |
-| `--transport`  | `tcp`              | Transport protocol (`tcp` or `udp`)              |
-| `--threads`    | (cores)            | Thread pool size (default: 1 per core)           |
-| `--file-dir`   | `./`               | Local directory for downloaded source files      |
-| `--max-messages`| 0                 | Stop after N completed work units                |
-| `--local`      | false              | Force localhost connection (127.0.0.1)           |
-| `--gateway`    | 192.168.1.1        | Default local gateway IPv4 address               |
-| `--consumer-id`| (auto-generated)   | Unique Consumer ID                               |
+| Flag             | Default            | Description                                      |
+|------------------|--------------------|--------------------------------------------------|
+| `--host`         | 127.0.0.1          | Producer host IPv4 address                       |
+| `--port`         | 9876               | Producer port                                    |
+| `--transport`    | `tcp`              | Transport protocol (`tcp` or `udp`)              |
+| `--threads`      | (cores)            | Thread pool size (default: 1 per core)           |
+| `--file-dir`     | `./`               | Local directory for downloaded source files      |
+| `--max-messages` | 0                  | Stop after N completed work units                |
+| `--local`        | false              | Force localhost connection (127.0.0.1)           |
+| `--gateway`      | 192.168.1.1        | Default local gateway IPv4 address               |
+| `--consumer-id`  | (auto-generated)   | Unique Consumer ID                               |
+| `--handler`      | (none)             | Work unit handler type (e.g. PWD, BENCH)         |
+| `--result-file`  | (none)             | Write results to JSON lines file                 |
 
 ## 10. Project Structure
 
@@ -208,31 +257,50 @@ project/
 │   └── USER_GUIDE.md           # End-user documentation
 ├── include/
 │   ├── common/
-│   │   ├── message.h           # JSON message types (work_unit, result, work_request)
+│   │   ├── message.h           # JSON message types (work_unit, result, work_request, heartbeat)
 │   │   ├── queue.h             # Thread-safe bounded queue
 │   │   ├── socket.h            # Platform-abstracted TCP/UDP socket wrapper
 │   │   ├── types.h             # Shared type definitions
-│   │   └── checkpoint.h        # Checkpoint state read/write
+│   │   ├── checkpoint.h        # Checkpoint state read/write
+│   │   ├── util.h              # SHA-256, platform data directory
+│   │   ├── signal_handler.h    # Platform-specific signal handling
+│   │   └── archive_validator.h # Archive validation (ZIP, RAR, 7Z) via libarchive
 │   ├── producer/
 │   │   ├── producer.h          # Producer engine
-│   │   └── work_tracker.h      # Work unit tracking table
+│   │   ├── work_tracker.h      # Work unit tracking table
+│   │   ├── test_plugin.h       # TestPlugin dispatch table interface
+│   │   ├── PWD_plugin.h        # PWD plugin factory
+│   │   └── BENCH_plugin.h      # BENCH plugin factory
 │   └── consumer/
 │       ├── consumer.h          # Consumer engine
-│       └── thread_pool.h       # Consumer thread pool
+│       ├── thread_pool.h       # Consumer thread pool
+│       ├── work_unit_handler.h # IWorkUnitHandler interface
+│       ├── result_sink.h       # IResultSink interface
+│       ├── file_result_sink.h  # FileResultSink (JSON lines)
+│       ├── PWD_Handler.h       # PWD handler implementation
+│       └── BENCH_Handler.h     # BENCH handler implementation
 ├── src/
 │   ├── common/
 │   │   ├── message.cpp
 │   │   ├── queue.cpp
 │   │   ├── socket.cpp          # Contains #ifdef _WIN32 / #else
 │   │   ├── signal_handler.cpp  # Platform-specific signal handling
-│   │   └── checkpoint.cpp
+│   │   ├── checkpoint.cpp
+│   │   ├── util.cpp            # SHA-256 (RFC 6234), get_data_directory
+│   │   └── archive_validator.cpp
 │   ├── producer/
 │   │   ├── producer.cpp
 │   │   ├── work_tracker.cpp
+│   │   ├── PWD_NextUnit.cpp    # Legacy C-style permutation engine
+│   │   ├── PWD_plugin.cpp      # PWD TestPlugin wrapper
+│   │   ├── BENCH_plugin.cpp    # BENCH TestPlugin implementation
 │   │   └── main.cpp            # Producer entry point
 │   └── consumer/
 │       ├── consumer.cpp
 │       ├── thread_pool.cpp
+│       ├── PWD_Handler.cpp     # PWD handler (uses ArchiveValidator)
+│       ├── BENCH_Handler.cpp   # BENCH handler
+│       ├── file_result_sink.cpp
 │       └── main.cpp            # Consumer entry point
 └── tests/
     ├── CMakeLists.txt
@@ -245,56 +313,114 @@ project/
 
 ## 11. Dependencies
 
-| Library       | Purpose                          | Integration      |
-|---------------|----------------------------------|------------------|
-| nlohmann/json | JSON serialization/deserialization | FetchContent     |
-| GTest         | Unit and integration testing     | FetchContent     |
+| Library       | Version | Purpose                          | Integration      |
+|---------------|---------|----------------------------------|------------------|
+| nlohmann/json | v3.11.3 | JSON serialization/deserialization | FetchContent     |
+| GTest         | v1.14.0 | Unit and integration testing     | FetchContent     |
+| zlib          | v1.3.1  | Compression (required by libarchive) | FetchContent |
+| libarchive    | v3.7.9  | Archive validation (ZIP, RAR, 7Z) | FetchContent    |
 
-No external threading or networking libraries — use standard C++17
-(`<thread>`, `<atomic>`, `<mutex>`, `<condition_variable>`) and
-platform sockets (`WinSock2` / `POSIX`).
+SHA-256 is implemented as pure C++ (RFC 6234) in `common/util.cpp` — no external
+crypto library. No external threading or networking libraries — standard C++17
+(`<thread>`, `<atomic>`, `<mutex>`, `<condition_variable>`) and platform sockets
+(`WinSock2` / `POSIX`).
 
 ## 12. CMake Configuration
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
-project(ProducerConsumer LANGUAGES CXX)
+project(ProducerConsumer LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# FetchContent for nlohmann/json and GTest
+include(FetchContent)
 
-# Common library (shared by both Producer and Consumer)
+# ── nlohmann/json (v3.11.3) ──────────────────────────────────────
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
+# ── zlib (v1.3.1, required by libarchive) ────────────────────────
+FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY https://github.com/madler/zlib.git
+    GIT_TAG v1.3.1
+)
+FetchContent_MakeAvailable(zlib)
+
+# ── libarchive (v3.7.9, ZIP/RAR/7Z validation) ───────────────────
+FetchContent_Declare(
+    libarchive
+    GIT_REPOSITORY https://github.com/libarchive/libarchive.git
+    GIT_TAG v3.7.9
+)
+FetchContent_MakeAvailable(libarchive)
+
+# ── Common static library ────────────────────────────────────────
 add_library(common STATIC
     src/common/message.cpp
     src/common/queue.cpp
     src/common/socket.cpp
     src/common/signal_handler.cpp
     src/common/checkpoint.cpp
+    src/common/util.cpp
+    src/common/archive_validator.cpp
 )
 target_include_directories(common PUBLIC include)
+target_link_libraries(common PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(common PUBLIC archive_static)
 
-# Producer
-add_executable(producer src/producer/producer.cpp src/producer/work_tracker.cpp src/producer/main.cpp)
-target_link_libraries(producer PRIVATE common)
+# ── Producer static library (no main) ────────────────────────────
+add_library(producer_lib STATIC
+    src/producer/producer.cpp
+    src/producer/work_tracker.cpp
+    src/producer/PWD_NextUnit.cpp
+    src/producer/PWD_plugin.cpp
+    src/producer/BENCH_plugin.cpp
+)
+target_link_libraries(producer_lib PUBLIC common)
 
-# Consumer
-add_executable(consumer src/consumer/consumer.cpp src/consumer/thread_pool.cpp src/consumer/main.cpp)
-target_link_libraries(consumer PRIVATE common)
+# ── Consumer static library (no main) ────────────────────────────
+add_library(consumer_lib STATIC
+    src/consumer/consumer.cpp
+    src/consumer/thread_pool.cpp
+    src/consumer/PWD_Handler.cpp
+    src/consumer/BENCH_Handler.cpp
+    src/consumer/file_result_sink.cpp
+)
+target_link_libraries(consumer_lib PUBLIC common)
 
-# Platform-specific linking
+# ── Executables ──────────────────────────────────────────────────
+add_executable(producer src/producer/main.cpp)
+target_link_libraries(producer PRIVATE producer_lib)
+
+add_executable(consumer src/consumer/main.cpp)
+target_link_libraries(consumer PRIVATE consumer_lib)
+
+# ── Platform-specific linking ────────────────────────────────────
 if(WIN32)
-    target_link_libraries(producer PRIVATE ws2_32)
-    target_link_libraries(consumer PRIVATE ws2_32)
+    target_link_libraries(common PRIVATE ws2_32)
 endif()
 
-# Tests
+# ── Tests (link against libs, not executables) ───────────────────
 option(BUILD_TESTS "Build unit and integration tests" ON)
 if(BUILD_TESTS)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.14.0
+    )
+    FetchContent_MakeAvailable(googletest)
     add_subdirectory(tests)
 endif()
 ```
+
+Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the
+executables. Current test count: 34/34 passing.
 
 ## 13. Internal Queue Design
 
@@ -307,7 +433,61 @@ A bounded, thread-safe queue used by both Producer and Consumer:
 - **Shutdown**: A `shutdown()` method unblocks all waiting threads so they
   can exit cleanly.
 
-## 14. Graceful Shutdown
+## 14. Plugin Architecture
+
+### Producer — `TestPlugin`
+
+The Producer uses a `TestPlugin` dispatch table (`include/producer/test_plugin.h`)
+with four `std::function` members:
+
+| Member             | Signature                                          | Purpose                              |
+|--------------------|----------------------------------------------------|--------------------------------------|
+| `startup`          | `void(config_path, resume_state)`                  | Reads plugin config, restores state  |
+| `next_unit`        | `bool(out WorkUnitMessage&)`                       | Generates next work unit             |
+| `checkpoint`       | `nlohmann::json()`                                 | Returns plugin-specific state        |
+| `exit_conditions`  | `bool()`                                           | Returns `true` when plugin wants to stop |
+
+The `next_unit` method returns `false` when the plugin is exhausted.
+
+### Existing Plugins
+
+| Plugin | Producer | Consumer | Description                        |
+|--------|----------|----------|------------------------------------|
+| PWD    | `PWD_plugin.cpp` | `PWD_Handler.cpp` | Password permutation generator   |
+| BENCH  | `BENCH_plugin.cpp` | `BENCH_Handler.cpp` | File chunk benchmark           |
+
+### Adding a New Test Type
+
+1. Create `XXX_plugin.h/cpp` in `src/producer/` implementing `TestPlugin`.
+2. Create `XXX_Handler.h/cpp` in `src/consumer/` implementing `IWorkUnitHandler`.
+3. Register in `producer.cpp::init_plugin()` with a `test_type_` check.
+4. Register in `consumer.cpp` constructor with a `handler_type` check.
+5. Add to `consumer_lib` in `CMakeLists.txt`.
+
+### Consumer — `IWorkUnitHandler`
+
+Pure virtual interface (`include/consumer/work_unit_handler.h`):
+- `type()` — returns handler type string
+- `handle(work)` — processes a `WorkUnitMessage`, returns `ResultMessage`
+
+### Consumer — `IResultSink`
+
+Pure virtual interface (`include/consumer/result_sink.h`):
+- `type()` — returns sink type string
+- `on_result(result)` — receives a result for persistence
+- `should_stop()` — returns `true` if the sink wants to halt processing
+- `summary()` — returns JSON summary of collected results
+
+`FileResultSink` (`include/consumer/file_result_sink.h`) writes JSON lines to a
+file, tracking total/success/failure counts.
+
+### PWD_NextUnit
+
+Legacy C-style class in `src/producer/PWD_NextUnit.h/cpp` — uses `#define`
+constants, raw arrays, no `std::` prefixes. Wrapped by `PWD_plugin.cpp` which
+implements the `TestPlugin` interface.
+
+## 15. Graceful Shutdown
 
 Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 
@@ -320,52 +500,61 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 ### Producer Shutdown
 
 - Stops accepting new work requests.
-- Writes checkpoint immediately (primary + backup).
+- Writes checkpoint immediately (primary + backup), including `plugin_state`.
 - I/O threads finish in-flight frames and close.
 - In-progress work units are left as `sent` in the checkpoint for re-dispatch on resume.
+- Connection monitor stops, stale consumers are not reclaimed during shutdown.
 
 ### Consumer Shutdown
 
 - Receiver thread stops, signals work queue to shut down.
+- Heartbeat thread stops.
 - Pool threads finish current work units and send results.
 - Uncompleted work units are sent back as `"failure"` results.
 
 ### Statistics
 
 **Producer prints on exit:**
-- Total jobs read from file
+- Test type
+- Total work units generated
 - Total work units dispatched
 - Total work units completed
-- Total work units failed / re-dispatched
-- Total work units still pending
-- Number of Consumers connected during session
-- Duration in seconds
-- Average throughput (completed msg/s)
-- Checkpoint file path and last write time
+- Total work units failed
+- Total work units pending
+- Password found / File error (PWD mode)
+- Checkpoint file path
 
 **Consumer prints on exit:**
 - Total work units received
 - Total work units completed successfully
 - Total work units failed
-- Total work units returned unprocessed
-- Source file path and local status
-- Thread pool size
-- Duration in seconds
-- Average throughput (completed msg/s)
+- Total work units discarded (duplicates, invalid)
+- Consumer ID
+- Sequence range
+- Result sink summary
 
-## 15. Phases
+## 16. Phases
 
-### Phase 1 — Core (this spec)
-- [ ] CMake project with platform conditionals
-- [ ] Shared common library (message, queue, socket, checkpoint)
-- [ ] Producer: job file, permutation, work unit tracking, multi-Consumer, checkpoint
-- [ ] Consumer: thread pool, work requests, result reporting, file download
-- [ ] TCP/UDP length-prefixed JSON framing
-- [ ] Three message types: `work_unit`, `result`, `work_request`
-- [ ] CLI argument parsing for both apps
-- [ ] Graceful shutdown with statistics and checkpoint
-- [ ] Unit tests for message, queue, work tracker, checkpoint
-- [ ] Integration test (spawn producer, connect consumer, verify full lifecycle)
+### Phase 1 — Core (COMPLETED)
+- [x] CMake project with platform conditionals
+- [x] Shared common library (message, queue, socket, checkpoint, util, archive_validator)
+- [x] Producer: JSON config, plugin architecture, work unit tracking, multi-Consumer, checkpoint
+- [x] Consumer: thread pool, work requests, result reporting, file download, handler architecture
+- [x] TCP/UDP length-prefixed JSON framing
+- [x] Four message types: `work_unit`, `result`, `work_request`, `heartbeat`
+- [x] CLI argument parsing for both apps
+- [x] Graceful shutdown with statistics and checkpoint
+- [x] Plugin architecture: `TestPlugin` dispatch table, PWD and BENCH plugins
+- [x] Consumer handler architecture: `IWorkUnitHandler`, `IResultSink`, `FileResultSink`
+- [x] Heartbeat protocol: 5s interval, 30s stale detection
+- [x] Consumer registration and disconnect tracking with work unit reclamation
+- [x] Work request throttling (max 1/50ms)
+- [x] Duplicate work_unit_id tracking (LRU cache, 3000 entries)
+- [x] Archive validation via libarchive (ZIP, RAR, 7Z)
+- [x] SHA-256 (pure C++ RFC 6234)
+- [x] Unit tests for message, queue, work tracker, checkpoint
+- [x] Integration test (spawn producer, connect consumer, verify full lifecycle)
+- [x] 34/34 tests passing
 
 ### Phase 2 — Extensions (future)
 - [ ] Actual task execution (rendering, encoding, etc.)
@@ -374,26 +563,37 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [ ] WebSocket or HTTP/2 transport option
 - [ ] Performance benchmarking suite
 - [ ] Dashboard / telemetry endpoint
+- [ ] UDP transport integration
+- [ ] Default `IResultSink` implementation
 
-## 16. Acceptance Criteria
+## 17. Acceptance Criteria
 
-- [ ] `cmake -B build && cmake --build build` succeeds on Windows (MSVC)
-- [ ] `cmake -B build && cmake --build build` succeeds on Linux (GCC/Clang)
-- [ ] Producer exits with code 1 when `--file` is missing or invalid
-- [ ] Producer reads, validates, and permutes the job file
-- [ ] Producer tracks all work units through their lifecycle
-- [ ] Producer removes completed work units from pending list on result
-- [ ] Producer re-dispatches work units when Consumer disconnects
-- [ ] Producer accepts multiple simultaneous Consumer connections
-- [ ] Producer responds to `work_request` with available work units
-- [ ] Checkpoint file written every 60s and on shutdown; backup maintained
-- [ ] `--resume` restores state and continues from last completed seq
-- [ ] Consumer thread pool defaults to 1 thread per core
-- [ ] Consumer sends `work_request` on connect and when threads are idle
-- [ ] Consumer sends `result` back after each work unit
-- [ ] Consumer downloads source file when not available locally
-- [ ] All three message types are valid JSON with required fields
-- [ ] Sequence numbers are monotonically increasing
-- [ ] Ctrl+C shuts down both apps cleanly within 5 seconds
-- [ ] Final statistics are printed to stdout
-- [ ] All unit and integration tests pass
+- [x] `cmake -B build && cmake --build build` succeeds on Windows (MSVC)
+- [x] `cmake -B build && cmake --build build` succeeds on Linux (GCC/Clang)
+- [x] Producer exits with code 1 when `--file` is missing or invalid
+- [x] Producer reads, validates, and initializes from JSON config file
+- [x] Producer tracks all work units through their lifecycle
+- [x] Producer removes completed work units from pending list on result
+- [x] Producer re-dispatches work units when Consumer disconnects
+- [x] Producer accepts multiple simultaneous Consumer connections
+- [x] Producer responds to `work_request` with available work units
+- [x] Producer handles `heartbeat` messages and detects stale consumers after 30s
+- [x] Checkpoint file written every 60s and on shutdown; backup maintained
+- [x] Checkpoint includes `plugin_state` for plugin-specific resume
+- [x] `--resume` restores state and continues from last completed seq
+- [x] Consumer thread pool defaults to 1 thread per core
+- [x] Consumer sends `work_request` on connect and when threads are idle
+- [x] Consumer sends `result` back after each work unit
+- [x] Consumer downloads source file when not available locally
+- [x] Consumer sends heartbeat every 5s
+- [x] Consumer throttles work requests to max 1 per 50ms
+- [x] Consumer tracks completed work_unit_ids in LRU cache (3000 entries)
+- [x] All four message types are valid JSON with required fields
+- [x] Sequence numbers are monotonically increasing
+- [x] Ctrl+C shuts down both apps cleanly within 5 seconds
+- [x] Final statistics are printed to stdout
+- [x] All unit and integration tests pass (34/34)
+- [x] PWD plugin: generates password permutations, reports found password
+- [x] BENCH plugin: generates file chunk work units
+- [x] FileResultSink writes JSON lines to file
+- [x] ArchiveValidator validates ZIP, RAR, 7Z archives with libarchive

@@ -27,7 +27,7 @@
 
 ### Build & Test
 - [x] Windows build (MSVC): `producer.exe` + `consumer.exe`
-- [x] 34/34 unit tests passing (message, queue, work_tracker, checkpoint, integration)
+- [x] 66/67 unit tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink)
 - [x] Test libraries: `producer_lib`, `consumer_lib` for test linking
 
 ### Pluggable Handler Architecture
@@ -64,10 +64,10 @@
 - [x] Producer refactored — reads main JSON config, instantiates plugin, on-demand work generation
 - [x] Checkpoint extended — `plugin_state` field for plugin-specific resume data
 - [x] Work request throttling (max 1 per 50ms, per consumer)
-- [ ] Consumer disconnect detection — TCP keepalive or application-level heartbeat
-- [ ] Consumer registration — populate `connected_consumers_` on first message, remove on disconnect
-- [ ] Disconnect logging — log consumer disconnect + count of reclaimed work units
-- [ ] Socket recv timeout — bounded detection of dead connections (no infinite recv block)
+- [x] Consumer disconnect detection — TCP keepalive or application-level heartbeat
+- [x] Consumer registration — populate `connected_consumers_` on first message, remove on disconnect
+- [x] Disconnect logging — log consumer disconnect + count of reclaimed work units
+- [x] Socket recv timeout — bounded detection of dead connections (no infinite recv block)
 - [x] Duplicate `work_unit_id` tracking in consumer — LRU cache (3000 entries, list + unordered_set)
 - [ ] Consumer shutdown returns in-progress units as `"failure"` results
 - [ ] Default `IResultSink` implementation (file-based result storage)
@@ -115,6 +115,9 @@ build/tests/Release/test_queue.exe
 build/tests/Release/test_work_tracker.exe
 build/tests/Release/test_checkpoint.exe
 build/tests/Release/test_integration.exe
+build/tests/Release/test_pwd_next_unit.exe
+build/tests/Release/test_sha256.exe
+build/tests/Release/test_file_result_sink.exe
 ```
 
 ## File Tree
@@ -137,6 +140,7 @@ project/
 │   │   ├── queue.h
 │   │   ├── signal_handler.h
 │   │   ├── socket.h
+│   │   ├── archive_validator.h  ← libarchive wrapper
 │   │   ├── types.h
 │   │   └── util.h               ← SHA-256 + get_data_directory()
 │   ├── consumer/
@@ -145,7 +149,8 @@ project/
 │   │   ├── thread_pool.h        ← set_handler()
 │   │   ├── work_unit_handler.h  ← IWorkUnitHandler interface
 │   │   ├── PWD_Handler.h
-│   │   └── BENCH_Handler.h
+│   │   ├── BENCH_Handler.h
+│   │   └── file_result_sink.h   ← IResultSink implementation
 │   └── producer/
 │       ├── producer.h           ← plugin architecture
 │       ├── work_tracker.h
@@ -160,7 +165,8 @@ project/
 │   │   ├── queue.cpp
 │   │   ├── signal_handler.cpp
 │   │   ├── socket.cpp
-│   │   └── util.cpp             ← SHA-256 + platform data dir
+│   │   ├── util.cpp             ← SHA-256 + platform data dir
+│   │   └── archive_validator.cpp ← libarchive wrapper
 │   ├── consumer/
 │   │   ├── consumer.cpp         ← handler, file transfer, SHA-256 verify
 │   │   ├── main.cpp             ← --handler TYPE flag
@@ -168,6 +174,7 @@ project/
 │   │   ├── PWD_Handler.h
 │   │   ├── BENCH_Handler.cpp    ← BENCH chunk comparison handler
 │   │   ├── BENCH_Handler.h
+│   │   ├── file_result_sink.cpp ← JSON lines + sink_stats
 │   │   └── thread_pool.cpp      ← dispatches through IWorkUnitHandler
 │   └── producer/
 │       ├── main.cpp             ← --test-type TYPE, default data dir
@@ -180,8 +187,11 @@ project/
 └── tests/
     ├── CMakeLists.txt
     ├── test_checkpoint.cpp
+    ├── test_file_result_sink.cpp
     ├── test_integration.cpp
     ├── test_message.cpp
+    ├── test_pwd_next_unit.cpp
     ├── test_queue.cpp
+    ├── test_sha256.cpp
     └── test_work_tracker.cpp
 ```

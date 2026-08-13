@@ -7,6 +7,7 @@
 #include <thread>
 #include <memory>
 #include <unordered_map>
+#include <chrono>
 #include "common/types.h"
 #include "common/message.h"
 #include "common/socket.h"
@@ -54,6 +55,10 @@ private:
     std::string now_iso();
     void file_transfer_loop();
     void handle_file_transfer(Socket client_socket);
+    void monitor_connections();
+    void register_consumer(const std::string& consumer_id, Socket& socket);
+    void unregister_consumer(const std::string& consumer_id);
+    void update_consumer_activity(const std::string& consumer_id);
 
     ProducerConfig config_;
     std::string producer_id_;
@@ -84,7 +89,15 @@ private:
     std::thread dispatcher_thread_;
     std::thread checkpoint_thread_;
 
-    std::unordered_map<std::string, Socket*> connected_consumers_;
+    struct ConsumerInfo {
+        Socket* socket = nullptr;
+        std::chrono::steady_clock::time_point last_activity;
+        std::chrono::steady_clock::time_point registered_at;
+    };
+    std::unordered_map<std::string, ConsumerInfo> connected_consumers_;
+    std::mutex consumers_mutex_;
+    std::atomic<bool> monitor_running_{false};
+    std::thread monitor_thread_;
 
     Socket file_transfer_socket_;
     std::thread file_transfer_thread_;
