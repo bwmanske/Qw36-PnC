@@ -226,4 +226,17 @@ std::string get_data_directory() {
     return dir;
 }
 
+// ── Duration parsing ─────────────────────────────────────────────
+
+int parse_duration(const std::string& s) {
+    if (s.empty()) return 0;
+    char suffix = s.back();
+    std::string num_part = (suffix == 's' || suffix == 'm' || suffix == 'h')
+                            ? s.substr(0, s.size() - 1) : s;
+    int value = std::stoi(num_part);
+    if (suffix == 'm') return value * 60;
+    if (suffix == 'h') return value * 3600;
+    return value;
+}
+
 } // namespace pc

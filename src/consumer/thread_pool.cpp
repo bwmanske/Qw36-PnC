@@ -19,6 +19,7 @@ ThreadPool::~ThreadPool() {
 }
 
 void ThreadPool::start() {
+    idle_count_ = num_threads_;
     for (size_t i = 0; i < num_threads_; i++) {
         workers_.emplace_back(&ThreadPool::worker_loop, this);
     }
@@ -44,6 +45,10 @@ size_t ThreadPool::active_count() const {
     return active_count_.load();
 }
 
+bool ThreadPool::queue_empty() const {
+    return queue_.empty();
+}
+
 size_t ThreadPool::total_completed() const {
     return total_completed_.load();
 }
@@ -67,6 +72,29 @@ void ThreadPool::set_handler(std::shared_ptr<IWorkUnitHandler> handler) {
     handler_ = handler;
 }
 
+std::vector<WorkUnitMessage> ThreadPool::drain_pending() {
+    std::vector<WorkUnitMessage> pending;
+
+    // Drain queued items
+    WorkUnitMessage work;
+    while (true) {
+        auto opt = queue_.try_pop(std::chrono::milliseconds(1));
+        if (!opt) break;
+        pending.push_back(std::move(*opt));
+    }
+
+    // Collect active work units
+    {
+        std::lock_guard<std::mutex> lock(active_work_mutex_);
+        for (auto& [id, w] : active_work_) {
+            pending.push_back(std::move(w));
+        }
+        active_work_.clear();
+    }
+
+    return pending;
+}
+
 void ThreadPool::worker_loop() {
     while (!SignalHandler::is_stop_requested()) {
         WorkUnitMessage work;
@@ -78,6 +106,11 @@ void ThreadPool::worker_loop() {
 
         active_count_++;
         idle_count_--;
+
+        {
+            std::lock_guard<std::mutex> lock(active_work_mutex_);
+            active_work_[work.work_unit_id] = work;
+        }
 
         ResultMessage result;
         {
@@ -91,6 +124,11 @@ void ThreadPool::worker_loop() {
                 result.result = nlohmann::json::object();
                 result.result["error"] = "no handler registered";
             }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(active_work_mutex_);
+            active_work_.erase(work.work_unit_id);
         }
 
         active_count_--;

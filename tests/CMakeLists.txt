@@ -34,3 +34,19 @@ gtest_discover_tests(test_sha256)
 add_executable(test_file_result_sink test_file_result_sink.cpp)
 target_link_libraries(test_file_result_sink PRIVATE consumer_lib GTest::gtest_main)
 gtest_discover_tests(test_file_result_sink)
+
+add_executable(test_util test_util.cpp)
+target_link_libraries(test_util PRIVATE common GTest::gtest_main)
+gtest_discover_tests(test_util)
+
+add_executable(test_thread_pool test_thread_pool.cpp)
+target_link_libraries(test_thread_pool PRIVATE consumer_lib GTest::gtest_main)
+gtest_discover_tests(test_thread_pool)
+
+add_executable(test_echo test_echo.cpp)
+target_link_libraries(test_echo PRIVATE producer_lib consumer_lib GTest::gtest_main)
+gtest_discover_tests(test_echo)
+
+add_executable(test_socket test_socket.cpp)
+target_link_libraries(test_socket PRIVATE common GTest::gtest_main)
+gtest_discover_tests(test_socket)

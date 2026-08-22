@@ -3,7 +3,7 @@
 ## 1. Overview
 
 A multi-threaded Producer-Consumer system implemented in C++17, built with CMake.
-The Producer reads a JSON configuration file, initializes a test plugin (PWD or BENCH),
+The Producer reads a JSON configuration file, initializes a test plugin (PWD, BENCH, or ECHO),
 generates work units, and dispatches them over the network to one or more Consumers.
 Consumers process work units using a pluggable handler and a thread pool, then return
 results. The Producer tracks all sent work units, validates results, and persists
@@ -44,6 +44,11 @@ appropriate platform behavior via `#ifdef _WIN32` / `#else` in the source files.
 - **File transfer**: Secondary TCP connection on `port + 1`. Consumer sends
   `0x01` + null-terminated filename. Producer responds with 4-byte big-endian
   file size + raw bytes. Size `0` means file not found.
+- **Sibling file manifest**: Consumer sends `0x02` to get a JSON manifest of
+  all sibling files (when `--transfer-siblings` is set). Producer responds with
+  4-byte big-endian JSON length + JSON array of `{name, size, sha256}` objects.
+  Empty array `[]` if no siblings or flag not set. Consumer downloads each file
+  via `0x01` and verifies SHA-256. Local consumers skip manifest entirely.
 - **Socket recv timeout**: 10 s on control channel, 30 s on file transfer channel.
 - **Consumer registration**: Producer tracks connected consumers via
   `connected_consumers_` map. Logs registration and disconnect events with
@@ -54,7 +59,21 @@ appropriate platform behavior via `#ifdef _WIN32` / `#else` in the source files.
 
 ## 4. Message Types
 
-Four message types flow between Producer and Consumer:
+Five message types flow between Producer and Consumer:
+
+### Version (Consumer → Producer)
+
+```json
+{
+  "msg_type": "version",
+  "version": "0.6",
+  "consumer_id": "cons-001"
+}
+```
+
+Sent as the first message on connect (TCP or UDP) to verify both sides share the
+same protocol version (`PC_VERSION`). A mismatch causes the Consumer to exit with
+code 4.
 
 ### Work Unit (Producer → Consumer)
 
@@ -218,10 +237,12 @@ producer --file PATH [OPTIONS]
 | `--permutation`    | `sequential`   | Job permutation mode                             |
 | `--seed`           | (current time) | PRNG seed for `random` permutation               |
 | `--duration`       | 0              | Run duration in seconds (0 = run until done)     |
+| `--max-time`       | 0              | Max time before shutdown; value may end in `s`/`m`/`h` (e.g. `30s`, `5m`, `1h`; bare number = seconds; 0 = no limit) |
 | `--gateway`        | 192.168.1.1    | Default local gateway IPv4 address               |
 | `--checkpoint-dir`| (data dir)     | Directory for checkpoint state files             |
 | `--resume`         | false          | Resume from checkpoint if one exists             |
 | `--test-type`      | (from config)  | Test type identifier (e.g. PWD, BENCH)           |
+| `--transfer-siblings` | false       | Transfer all sibling files in config directory to remote consumers |
 
 ### Consumer
 
@@ -240,8 +261,12 @@ consumer [OPTIONS]
 | `--local`        | false              | Force localhost connection (127.0.0.1)           |
 | `--gateway`      | 192.168.1.1        | Default local gateway IPv4 address               |
 | `--consumer-id`  | (auto-generated)   | Unique Consumer ID                               |
-| `--handler`      | (none)             | Work unit handler type (e.g. PWD, BENCH)         |
-| `--result-file`  | (none)             | Write results to JSON lines file                 |
+| `--handler`      | (none)             | Work unit handler type (e.g. PWD, BENCH, ECHO)   |
+| `--handler-config`| (none)            | Path to handler-specific config file             |
+| `--result-file`  | (auto-generated)   | Write results to JSON lines file                 |
+| `--max-failures` | 0                  | Stop after N failure results                     |
+| `--max-duration` | 0                  | Stop after N seconds                             |
+| `--timeout`      | 0                  | Close after N seconds with no producer communication (0 = no limit) |
 
 ## 10. Project Structure
 
@@ -253,11 +278,15 @@ project/
 │   ├── Producer-Spec.md        # Producer detailed spec
 │   └── Consumer-Spec.md        # Consumer detailed spec
 ├── docs/
+│   ├── BUILDING.md             # Build instructions (Windows/Linux)
+│   ├── COMMUNICATION.md        # Network protocol reference
 │   ├── IMPLEMENTATION.md       # Implementation guide for developers
+│   ├── PROGRESS.md             # Remaining tasks tracker
+│   ├── TESTING.md              # Testing strategy
 │   └── USER_GUIDE.md           # End-user documentation
 ├── include/
 │   ├── common/
-│   │   ├── message.h           # JSON message types (work_unit, result, work_request, heartbeat)
+│   │   ├── message.h           # JSON message types (version, work_unit, result, work_request, heartbeat)
 │   │   ├── queue.h             # Thread-safe bounded queue
 │   │   ├── socket.h            # Platform-abstracted TCP/UDP socket wrapper
 │   │   ├── types.h             # Shared type definitions
@@ -270,7 +299,8 @@ project/
 │   │   ├── work_tracker.h      # Work unit tracking table
 │   │   ├── test_plugin.h       # TestPlugin dispatch table interface
 │   │   ├── PWD_plugin.h        # PWD plugin factory
-│   │   └── BENCH_plugin.h      # BENCH plugin factory
+│   │   ├── BENCH_plugin.h      # BENCH plugin factory
+│   │   └── ECHO_plugin.h       # ECHO plugin factory
 │   └── consumer/
 │       ├── consumer.h          # Consumer engine
 │       ├── thread_pool.h       # Consumer thread pool
@@ -278,7 +308,8 @@ project/
 │       ├── result_sink.h       # IResultSink interface
 │       ├── file_result_sink.h  # FileResultSink (JSON lines)
 │       ├── PWD_Handler.h       # PWD handler implementation
-│       └── BENCH_Handler.h     # BENCH handler implementation
+│       ├── BENCH_Handler.h     # BENCH handler implementation
+│       └── ECHO_Handler.h      # ECHO handler implementation
 ├── src/
 │   ├── common/
 │   │   ├── message.cpp
@@ -294,21 +325,30 @@ project/
 │   │   ├── PWD_NextUnit.cpp    # Legacy C-style permutation engine
 │   │   ├── PWD_plugin.cpp      # PWD TestPlugin wrapper
 │   │   ├── BENCH_plugin.cpp    # BENCH TestPlugin implementation
+│   │   ├── ECHO_plugin.cpp     # ECHO TestPlugin implementation
 │   │   └── main.cpp            # Producer entry point
 │   └── consumer/
 │       ├── consumer.cpp
 │       ├── thread_pool.cpp
 │       ├── PWD_Handler.cpp     # PWD handler (uses ArchiveValidator)
 │       ├── BENCH_Handler.cpp   # BENCH handler
+│       ├── ECHO_Handler.cpp    # ECHO handler
 │       ├── file_result_sink.cpp
 │       └── main.cpp            # Consumer entry point
 └── tests/
     ├── CMakeLists.txt
-    ├── test_message.cpp        # Message serialization round-trip
+    ├── test_message.cpp        # Message serialization round-trip (all 5 types)
     ├── test_queue.cpp          # Thread-safe queue stress test
     ├── test_work_tracker.cpp   # Work unit lifecycle
     ├── test_checkpoint.cpp     # Checkpoint save/resume
-    └── test_integration.cpp    # Producer-Consumer end-to-end
+    ├── test_integration.cpp    # Lifecycle + real-process end-to-end
+    ├── test_pwd_next_unit.cpp  # PWD_NextUnit permutation engine
+    ├── test_sha256.cpp         # SHA-256 RFC 6234 vectors + file hash
+    ├── test_file_result_sink.cpp # FileResultSink JSON lines + stats
+    ├── test_util.cpp           # parse_duration tests
+    ├── test_thread_pool.cpp    # ThreadPool dispatch, idle callback, drain, shutdown
+    ├── test_echo.cpp           # ECHO plugin + handler
+    └── test_socket.cpp         # TCP/UDP frame round-trip
 ```
 
 ## 11. Dependencies
@@ -381,6 +421,7 @@ add_library(producer_lib STATIC
     src/producer/PWD_NextUnit.cpp
     src/producer/PWD_plugin.cpp
     src/producer/BENCH_plugin.cpp
+    src/producer/ECHO_plugin.cpp
 )
 target_link_libraries(producer_lib PUBLIC common)
 
@@ -390,6 +431,7 @@ add_library(consumer_lib STATIC
     src/consumer/thread_pool.cpp
     src/consumer/PWD_Handler.cpp
     src/consumer/BENCH_Handler.cpp
+    src/consumer/ECHO_Handler.cpp
     src/consumer/file_result_sink.cpp
 )
 target_link_libraries(consumer_lib PUBLIC common)
@@ -420,7 +462,7 @@ endif()
 ```
 
 Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the
-executables. Current test count: 34/34 passing.
+executables. Current test count: 110/110 passing.
 
 ## 13. Internal Queue Design
 
@@ -455,6 +497,7 @@ The `next_unit` method returns `false` when the plugin is exhausted.
 |--------|----------|----------|------------------------------------|
 | PWD    | `PWD_plugin.cpp` | `PWD_Handler.cpp` | Password permutation generator   |
 | BENCH  | `BENCH_plugin.cpp` | `BENCH_Handler.cpp` | File chunk benchmark           |
+| ECHO   | `ECHO_plugin.cpp` | `ECHO_Handler.cpp` | Echo/verification with power-law delay |
 
 ### Adding a New Test Type
 
@@ -469,6 +512,7 @@ The `next_unit` method returns `false` when the plugin is exhausted.
 Pure virtual interface (`include/consumer/work_unit_handler.h`):
 - `type()` — returns handler type string
 - `handle(work)` — processes a `WorkUnitMessage`, returns `ResultMessage`
+- `configure(config_path)` — optional handler configuration (default no-op)
 
 ### Consumer — `IResultSink`
 
@@ -479,7 +523,9 @@ Pure virtual interface (`include/consumer/result_sink.h`):
 - `summary()` — returns JSON summary of collected results
 
 `FileResultSink` (`include/consumer/file_result_sink.h`) writes JSON lines to a
-file, tracking total/success/failure counts.
+file, tracking total/success/failure counts. Supports stopping criteria:
+`max_failures` (stop after N failures) and `max_duration_sec` (stop after N seconds).
+Created automatically with a default path when no `--result-file` is specified.
 
 ### PWD_NextUnit
 
@@ -541,20 +587,21 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [x] Producer: JSON config, plugin architecture, work unit tracking, multi-Consumer, checkpoint
 - [x] Consumer: thread pool, work requests, result reporting, file download, handler architecture
 - [x] TCP/UDP length-prefixed JSON framing
-- [x] Four message types: `work_unit`, `result`, `work_request`, `heartbeat`
+- [x] Five message types: `version`, `work_unit`, `result`, `work_request`, `heartbeat`
 - [x] CLI argument parsing for both apps
 - [x] Graceful shutdown with statistics and checkpoint
 - [x] Plugin architecture: `TestPlugin` dispatch table, PWD and BENCH plugins
 - [x] Consumer handler architecture: `IWorkUnitHandler`, `IResultSink`, `FileResultSink`
 - [x] Heartbeat protocol: 5s interval, 30s stale detection
 - [x] Consumer registration and disconnect tracking with work unit reclamation
-- [x] Work request throttling (max 1/50ms)
+- [x] Work request throttling (max 1/50ms) + idle safety net
 - [x] Duplicate work_unit_id tracking (LRU cache, 3000 entries)
 - [x] Archive validation via libarchive (ZIP, RAR, 7Z)
 - [x] SHA-256 (pure C++ RFC 6234)
-- [x] Unit tests for message, queue, work tracker, checkpoint
-- [x] Integration test (spawn producer, connect consumer, verify full lifecycle)
-- [x] 34/34 tests passing
+- [x] Producer `--max-time` and consumer `--timeout` shutdown options
+- [x] Unit tests for message, queue, work tracker, checkpoint, util, thread pool, echo, socket
+- [x] End-to-end integration tests (spawn real producer + consumer, verify full cycle and timeout shutdown)
+- [x] 110/110 tests passing
 
 ### Phase 2 — Extensions (future)
 - [ ] Actual task execution (rendering, encoding, etc.)
@@ -563,8 +610,8 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [ ] WebSocket or HTTP/2 transport option
 - [ ] Performance benchmarking suite
 - [ ] Dashboard / telemetry endpoint
-- [ ] UDP transport integration
-- [ ] Default `IResultSink` implementation
+- [x] UDP transport integration (producer udp_loop, consumer UDP send/recv, version handshake over UDP) (producer udp_loop, consumer UDP send/recv, version handshake over UDP)
+- [x] Default `IResultSink` implementation
 
 ## 17. Acceptance Criteria
 
@@ -588,11 +635,11 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [x] Consumer sends heartbeat every 5s
 - [x] Consumer throttles work requests to max 1 per 50ms
 - [x] Consumer tracks completed work_unit_ids in LRU cache (3000 entries)
-- [x] All four message types are valid JSON with required fields
+- [x] All five message types are valid JSON with required fields
 - [x] Sequence numbers are monotonically increasing
 - [x] Ctrl+C shuts down both apps cleanly within 5 seconds
 - [x] Final statistics are printed to stdout
-- [x] All unit and integration tests pass (34/34)
+- [x] All unit and integration tests pass (110/110)
 - [x] PWD plugin: generates password permutations, reports found password
 - [x] BENCH plugin: generates file chunk work units
 - [x] FileResultSink writes JSON lines to file

@@ -29,7 +29,11 @@ struct ConsumerConfig {
     std::string gateway = "192.168.1.1";
     std::string consumer_id = "";
     std::string handler_type = "";
+    std::string handler_config = "";
     std::string result_file = "";
+    int max_failures = 0;
+    int max_duration_sec = 0;
+    int idle_timeout_sec = 0;
 };
 
 class Consumer {
@@ -44,6 +48,7 @@ private:
     void connect_to_producer();
     void receiver_loop();
     void download_source_file(const std::string& source_file, const std::string& source_hash);
+    void download_additional_files();
     void send_work_request(int threads_available);
     void send_result(const ResultMessage& result);
     void print_statistics();
@@ -78,7 +83,12 @@ private:
     std::shared_ptr<IWorkUnitHandler> handler_;
     std::shared_ptr<IResultSink> sink_;
 
+    std::string producer_address_;
+    uint16_t producer_port_ = 0;
+
     std::chrono::steady_clock::time_point last_request_time_;
+    std::chrono::steady_clock::time_point last_comm_time_;
+    std::mutex comm_time_mutex_;
 
     std::list<std::string> completed_ids_lru_;
     std::unordered_set<std::string> completed_ids_set_;

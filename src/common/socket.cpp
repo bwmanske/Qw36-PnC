@@ -43,7 +43,17 @@ Socket::Socket(Transport transport)
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
         throw std::runtime_error("WSAStartup failed");
+    impl_->sock = ::socket(AF_INET,
+        transport == Transport::TCP ? SOCK_STREAM : SOCK_DGRAM, 0);
+    if (impl_->sock == INVALID_SOCKET)
+        throw std::runtime_error("socket creation failed: " + std::to_string(WSAGetLastError()));
+#else
+    impl_->sock = ::socket(AF_INET,
+        transport == Transport::TCP ? SOCK_STREAM : SOCK_DGRAM, 0);
+    if (impl_->sock < 0)
+        throw std::runtime_error("socket creation failed: " + std::strerror(errno));
 #endif
+    impl_->open = true;
 }
 
 Socket::~Socket() {

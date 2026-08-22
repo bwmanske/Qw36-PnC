@@ -19,6 +19,12 @@
 
 namespace pc {
 
+struct AdditionalFile {
+    std::string name;
+    uint64_t size = 0;
+    std::string sha256;
+};
+
 struct ProducerConfig {
     std::string file_path;
     uint16_t port = 9876;
@@ -30,6 +36,8 @@ struct ProducerConfig {
     std::string checkpoint_dir;
     bool resume = false;
     std::string test_type = "";
+    bool transfer_siblings = false;
+    int max_time_sec = 0;
 };
 
 class Producer {
@@ -57,8 +65,12 @@ private:
     void handle_file_transfer(Socket client_socket);
     void monitor_connections();
     void register_consumer(const std::string& consumer_id, Socket& socket);
+    void register_consumer_udp(const std::string& consumer_id, const std::string& address, uint16_t port);
     void unregister_consumer(const std::string& consumer_id);
     void update_consumer_activity(const std::string& consumer_id);
+    void udp_loop();
+    void handle_udp_message(const std::string& consumer_id, const std::string& address, uint16_t port, const std::string& frame);
+    void handle_udp_work_request(const WorkRequestMessage& req, const std::string& address, uint16_t port);
 
     ProducerConfig config_;
     std::string producer_id_;
@@ -68,6 +80,7 @@ private:
     int max_units_ = 0;
     int max_idle_seconds_ = 300;
 
+    std::chrono::steady_clock::time_point start_time_;
     int64_t next_seq_ = 0;
     int64_t total_dispatched_ = 0;
     int64_t total_generated_ = 0;
@@ -91,6 +104,8 @@ private:
 
     struct ConsumerInfo {
         Socket* socket = nullptr;
+        std::string address;
+        uint16_t port = 0;
         std::chrono::steady_clock::time_point last_activity;
         std::chrono::steady_clock::time_point registered_at;
     };
@@ -102,6 +117,12 @@ private:
     Socket file_transfer_socket_;
     std::thread file_transfer_thread_;
     std::atomic<bool> file_transfer_running_{false};
+
+    std::thread udp_thread_;
+    std::atomic<bool> udp_running_{false};
+
+    std::vector<AdditionalFile> additional_files_;
+    void scan_additional_files();
 };
 
 } // namespace pc

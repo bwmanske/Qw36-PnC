@@ -11,6 +11,8 @@ project/
 │   ├── Producer-Spec.md            # Producer detailed specification
 │   └── Consumer-Spec.md            # Consumer detailed specification
 ├── docs/
+│   ├── BUILDING.md                 # Build instructions (Windows/Linux)
+│   ├── COMMUNICATION.md            # Network protocol reference
 │   ├── IMPLEMENTATION.md           # This document
 │   ├── PROGRESS.md                 # Remaining tasks tracker
 │   ├── TESTING.md                  # Testing strategy
@@ -19,12 +21,13 @@ project/
 │   ├── common/
 │   │   ├── archive_validator.h     # libarchive wrapper for ZIP/RAR/7Z validation
 │   │   ├── checkpoint.h            # CheckpointState + CheckpointManager
-│   │   ├── message.h               # 4 message types: work_unit, result, work_request, heartbeat
+│   │   ├── message.h               # 5 message types: version, work_unit, result, work_request, heartbeat
 │   │   ├── queue.h                 # Thread-safe bounded queue (template, header-only impl)
 │   │   ├── signal_handler.h        # Platform-abstracted signal handling
 │   │   ├── socket.h                # Platform-abstracted TCP/UDP socket wrapper
 │   │   ├── types.h                 # Shared enums and structs (Transport, MessageType, etc.)
-│   │   └── util.h                  # SHA-256 (RFC 6234) + get_data_directory()
+│   │   ├── util.h                  # SHA-256 (RFC 6234) + get_data_directory()
+│   │   └── version.h               # PC_VERSION constant
 │   ├── consumer/
 │   │   ├── consumer.h              # Consumer engine
 │   │   ├── file_result_sink.h      # JSON-lines result sink with running stats
@@ -32,13 +35,15 @@ project/
 │   │   ├── thread_pool.h           # Consumer thread pool with callbacks
 │   │   ├── work_unit_handler.h     # IWorkUnitHandler interface
 │   │   ├── PWD_Handler.h           # Password brute-force handler
-│   │   └── BENCH_Handler.h         # File chunk benchmark handler
+│   │   ├── BENCH_Handler.h         # File chunk benchmark handler
+│   │   └── ECHO_Handler.h          # Echo/verification handler
 │   └── producer/
 │       ├── producer.h              # Producer engine
 │       ├── work_tracker.h          # Work unit tracking table
 │       ├── test_plugin.h           # TestPlugin dispatch table (4 std::function members)
 │       ├── PWD_plugin.h            # Password brute-force plugin factory
-│       └── BENCH_plugin.h          # File chunk benchmark plugin factory
+│       ├── BENCH_plugin.h          # File chunk benchmark plugin factory
+│       └── ECHO_plugin.h           # Echo/verification plugin factory
 ├── src/
 │   ├── common/
 │   │   ├── archive_validator.cpp   # libarchive integration
@@ -54,6 +59,7 @@ project/
 │   │   ├── file_result_sink.cpp    # JSON-lines output implementation
 │   │   ├── PWD_Handler.cpp         # PWD handler implementation
 │   │   ├── BENCH_Handler.cpp       # BENCH handler implementation
+│   │   ├── ECHO_Handler.cpp        # ECHO handler implementation
 │   │   └── thread_pool.cpp         # Thread pool implementation
 │   └── producer/
 │       ├── main.cpp                # Producer entry point, CLI parsing
@@ -62,16 +68,21 @@ project/
 │       ├── PWD_NextUnit.h          # Legacy C-style permutation generator
 │       ├── PWD_NextUnit.cpp        # Legacy C-style permutation generator
 │       ├── PWD_plugin.cpp          # PWD TestPlugin wrapper
-│       └── BENCH_plugin.cpp        # BENCH TestPlugin implementation
+│       ├── BENCH_plugin.cpp        # BENCH TestPlugin implementation
+│       └── ECHO_plugin.cpp         # ECHO TestPlugin implementation
 └── tests/
     ├── CMakeLists.txt              # Test CMake configuration
     ├── test_checkpoint.cpp         # Checkpoint save/resume tests
+    ├── test_echo.cpp               # ECHO plugin + handler (generation, resume, hash verify)
     ├── test_file_result_sink.cpp   # FileResultSink JSON lines + stats
-    ├── test_integration.cpp        # Producer-Consumer end-to-end
-    ├── test_message.cpp            # Message serialization round-trip
+    ├── test_integration.cpp        # Producer-Consumer end-to-end (spawns real processes)
+    ├── test_message.cpp            # Message serialization round-trip (all 5 types)
     ├── test_pwd_next_unit.cpp      # PWD_NextUnit permutation engine
     ├── test_queue.cpp              # Thread-safe queue stress test
     ├── test_sha256.cpp             # SHA-256 RFC 6234 vectors + file hash
+    ├── test_socket.cpp             # TCP/UDP frame round-trip tests
+    ├── test_thread_pool.cpp        # ThreadPool dispatch, idle callback, drain, shutdown
+    ├── test_util.cpp               # parse_duration tests
     └── test_work_tracker.cpp       # Work unit lifecycle tests
 ```
 
@@ -114,6 +125,10 @@ build\tests\Release\test_integration.exe
 build\tests\Release\test_pwd_next_unit.exe
 build\tests\Release\test_sha256.exe
 build\tests\Release\test_file_result_sink.exe
+build\tests\Release\test_util.exe
+build\tests\Release\test_thread_pool.exe
+build\tests\Release\test_echo.exe
+build\tests\Release\test_socket.exe
 ```
 
 ### CMake Targets
@@ -121,8 +136,8 @@ build\tests\Release\test_file_result_sink.exe
 | Target           | Type      | Description                                      |
 |------------------|-----------|--------------------------------------------------|
 | `common`         | static lib| Sockets, messages, queue, checkpoint, SHA-256, signal handling, archive validator |
-| `producer_lib`   | static lib| Producer logic, work tracker, PWD_NextUnit, PWD/BENCH plugins |
-| `consumer_lib`   | static lib| Consumer logic, thread pool, PWD/BENCH handlers, file result sink |
+| `producer_lib`   | static lib| Producer logic, work tracker, PWD_NextUnit, PWD/BENCH/ECHO plugins |
+| `consumer_lib`   | static lib| Consumer logic, thread pool, PWD/BENCH/ECHO handlers, file result sink |
 | `producer`       | executable| CLI entry point                                  |
 | `consumer`       | executable| CLI entry point                                  |
 
@@ -216,9 +231,14 @@ struct ConsumerState {
 
 ### `message.h` / `message.cpp`
 
-Four message types, each with `to_json()`, `from_json()`, `to_string()`, `from_string()`:
+Five message types, each with `to_json()`, `from_json()`, `to_string()`, `from_string()`:
 
 ```cpp
+struct VersionMessage {
+    std::string version;
+    std::string consumer_id;
+};
+
 struct WorkUnitMessage {
     std::string test_type;
     std::string source_file;
@@ -254,6 +274,19 @@ struct HeartbeatMessage {
     std::string timestamp;
 };
 ```
+
+`VersionMessage` is exchanged as the first message on connection (TCP or UDP) to verify
+that producer and consumer share the same protocol version (`PC_VERSION` from `version.h`).
+
+### `version.h`
+
+Single-line version constant:
+
+```cpp
+constexpr const char* PC_VERSION = "0.6";
+```
+
+Incremented by 0.1 whenever the producer-consumer communication protocol changes.
 
 ### `queue.h`
 
@@ -363,12 +396,13 @@ public:
 
 ### `util.h` / `util.cpp`
 
-Pure C++ SHA-256 (RFC 6234 implementation) and platform data directory:
+Pure C++ SHA-256 (RFC 6234 implementation), platform data directory, and duration parsing:
 
 ```cpp
 std::string sha256_file(const std::string& path);
 std::string sha256_bytes(const uint8_t* data, size_t len);
 std::string get_data_directory();
+int parse_duration(const std::string& s);   // "30" → 30, "30s" → 30, "5m" → 300, "1h" → 3600; "" → 0
 ```
 
 ### `archive_validator.h` / `archive_validator.cpp`
@@ -420,6 +454,7 @@ struct TestPlugin {
 |--------|-----------------|---------|
 | `PWD` | `create_pwd_plugin()` | Password permutation generator, wraps legacy `PWD_NextUnit` |
 | `BENCH` | `create_bench_plugin()` | File chunk benchmark |
+| `ECHO` | `create_echo_plugin()` | Sequential payload generator (A-Z cycling), configurable size and total units |
 
 ### `work_tracker.h` / `work_tracker.cpp`
 
@@ -471,12 +506,20 @@ class Producer {
 
     // Consumer registration
     void register_consumer(const std::string& consumer_id, Socket& socket);
+    void register_consumer_udp(const std::string& consumer_id, const std::string& address, uint16_t port);
     void unregister_consumer(const std::string& consumer_id);
     void update_consumer_activity(const std::string& consumer_id);
+
+    // UDP
+    void udp_loop();
+    void handle_udp_message(const std::string& consumer_id, const std::string& address, uint16_t port, const std::string& frame);
+    void handle_udp_work_request(const WorkRequestMessage& req, const std::string& address, uint16_t port);
 
     // Internal
     struct ConsumerInfo {
         Socket* socket;
+        std::string address;
+        uint16_t port;
         std::chrono::steady_clock::time_point last_activity;
         std::chrono::steady_clock::time_point registered_at;
     };
@@ -484,7 +527,8 @@ class Producer {
 ```
 
 Key threads:
-- **Main thread**: Accepts connections, spawns `handle_client` per consumer
+- **Main thread**: Accepts TCP connections, spawns `handle_client` per consumer; idle loop for UDP
+- **UDP thread** (`udp_loop`): Receives datagrams, dispatches to `handle_udp_message`
 - **Dispatcher thread**: Generates work units via plugin, pushes to `dispatch_queue_`
 - **Checkpoint thread**: Periodically saves state via `CheckpointManager`
 - **File transfer thread**: Listens on `port + 1` for file download requests
@@ -493,12 +537,14 @@ Key threads:
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments (`--file`, `--port`, `--permutation`, `--seed`, `--duration`, `--resume`, `--checkpoint-dir`)
+1. Parse CLI arguments (`--file`, `--port`, `--transport`, `--permutation`, `--seed`, `--duration`, `--max-time`, `--gateway`, `--checkpoint-dir`, `--resume`, `--test-type`, `--transfer-siblings`)
 2. Validate config file
 3. Check for checkpoint (if `--resume`)
 4. Construct and run `Producer`
 5. Handle signals via `SignalHandler`
 6. Print statistics on exit
+
+`--max-time DUR` is parsed with `parse_duration()` (accepts `s`/`m`/`h` suffixes) and stored in `ProducerConfig::max_time_sec`. The dispatcher loop checks elapsed time against `start_time_` and shuts down when the limit is reached.
 
 ## 7. Consumer Architecture
 
@@ -510,6 +556,7 @@ public:
     virtual ~IWorkUnitHandler() = default;
     virtual std::string type() const = 0;
     virtual ResultMessage handle(const WorkUnitMessage& work) = 0;
+    virtual void configure(const std::string& config_path) {}  // Default no-op
 };
 ```
 
@@ -532,8 +579,10 @@ JSON-lines output with running statistics:
 
 ```cpp
 class FileResultSink : public IResultSink {
+    // Constructor: FileResultSink(file_path, max_failures=0, max_duration_sec=0)
     // Writes each result as a JSON line to file_path_
     // Tracks total_, successes_, failures_ behind a mutex
+    // should_stop() returns true when failures_ >= max_failures_ or elapsed >= max_duration_sec_
     // summary() returns { total, successes, failures }
 };
 ```
@@ -544,6 +593,7 @@ class FileResultSink : public IResultSink {
 |---------|--------|---------|
 | `PWD_Handler` | `"PWD"` | Brute-force password validation using `ArchiveValidator` |
 | `BENCH_Handler` | `"BENCH"` | File chunk processing benchmark |
+| `ECHO_Handler` | `"ECHO"` | Payload hash verification with configurable power-law delay |
 
 ### `thread_pool.h` / `thread_pool.cpp`
 
@@ -552,22 +602,27 @@ Thread pool with work request coordination:
 ```cpp
 class ThreadPool {
 public:
+    explicit ThreadPool(size_t num_threads);
     void start();
     void shutdown();
     void submit(WorkUnitMessage work);
     size_t idle_count() const;
     size_t active_count() const;
+    bool queue_empty() const;
     size_t total_completed() const;
     size_t total_failed() const;
     void set_handler(std::shared_ptr<IWorkUnitHandler> handler);
     void set_result_callback(ResultCallback cb);
     void set_idle_callback(IdleCallback cb);
+    std::vector<WorkUnitMessage> drain_pending();  // Returns queued + active work units
 };
 ```
 
 Worker threads pull from an internal `BoundedQueue<WorkUnitMessage>`, invoke the
 handler, and fire the result callback. When a thread goes idle, it fires the idle
-callback which triggers work requests to the producer.
+callback which triggers work requests to the producer. `idle_count_` is
+initialized to `num_threads_` in `start()` (it must never underflow, since it is
+a `size_t`).
 
 ### `consumer.h` / `consumer.cpp`
 
@@ -596,6 +651,8 @@ class Consumer {
     std::shared_ptr<IWorkUnitHandler> handler_;
     std::shared_ptr<IResultSink> sink_;
     std::chrono::steady_clock::time_point last_request_time_;  // Throttle: 50ms min interval
+    std::chrono::steady_clock::time_point last_comm_time_;     // --timeout idle detection
+    std::mutex comm_time_mutex_;
 };
 ```
 
@@ -608,13 +665,16 @@ Key threads:
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments (`--host`, `--port`, `--threads`, `--file-dir`, `--max-messages`, `--consumer-id`, `--handler`, `--result-file`)
+1. Parse CLI arguments (`--host`, `--port`, `--transport`, `--threads`, `--file-dir`, `--max-messages`, `--local`, `--gateway`, `--consumer-id`, `--handler`, `--handler-config`, `--result-file`, `--max-failures`, `--max-duration`, `--timeout`)
 2. Generate `consumer_id` (if not provided)
 3. Construct handler based on `--handler` type
-4. Construct result sink if `--result-file` provided
-5. Construct and run `Consumer`
-6. Handle signals via `SignalHandler`
-7. Print statistics on exit
+4. Call `handler_->configure(config.handler_config)` if `--handler-config` provided
+5. Construct result sink (default: `FileResultSink` with auto-generated path if no `--result-file`)
+6. Construct and run `Consumer`
+7. Handle signals via `SignalHandler`
+8. Print statistics on exit
+
+`--timeout SEC` is stored in `ConsumerConfig::idle_timeout_sec`. The main loop shuts down the consumer when no producer communication (any received frame) has occurred for that many seconds.
 
 ## 8. Network Protocol
 
@@ -660,6 +720,16 @@ Size `0` means file not found.
 
 - Consumer enforces a **50ms minimum interval** between work requests
 - Tracked via `last_request_time_` (`std::chrono::steady_clock::time_point`)
+- **Idle safety net**: the consumer main loop also sends a work request whenever
+  `pool_->active_count() == 0 && pool_->queue_empty()`. This guards against the
+  throttle dropping the idle-callback request when a burst of work just finished.
+
+### Idle Timeout (`--timeout`)
+
+- `last_comm_time_` is stamped (under `comm_time_mutex_`) every time the
+  receiver loop receives a frame from the producer
+- The main loop shuts down the consumer when
+  `now - last_comm_time_ >= idle_timeout_sec` (if `idle_timeout_sec > 0`)
 
 ### Duplicate Detection
 
@@ -680,17 +750,23 @@ Size `0` means file not found.
 
 | Test File                    | Links Against              | What It Tests                          |
 |------------------------------|----------------------------|----------------------------------------|
-| `test_message.cpp`           | `common`                   | JSON round-trip for all 4 message types |
-| `test_queue.cpp`             | `common`                   | BoundedQueue concurrency, shutdown     |
-| `test_work_tracker.cpp`      | `producer_lib`             | Work unit lifecycle, status transitions |
-| `test_checkpoint.cpp`        | `common`                   | Save/load, backup, resume              |
-| `test_integration.cpp`       | `producer_lib`, `consumer_lib` | Producer-Consumer end-to-end       |
-| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering |
-| `test_sha256.cpp`            | `common`                   | RFC 6234 vectors, file hashing         |
-| `test_file_result_sink.cpp`  | `consumer_lib`             | JSON lines output, concurrent writes   |
+| `test_message.cpp`           | `common`                   | JSON round-trip for all 5 message types (15 tests) |
+| `test_queue.cpp`             | `common`                   | BoundedQueue concurrency, shutdown (8 tests) |
+| `test_work_tracker.cpp`      | `producer_lib`             | Work unit lifecycle, status transitions (10 tests) |
+| `test_checkpoint.cpp`        | `common`                   | Save/load, backup, resume (6 tests) |
+| `test_integration.cpp`       | `producer_lib`, `consumer_lib` | Lifecycle tests + real-process end-to-end (6 tests) |
+| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering (20 tests) |
+| `test_sha256.cpp`            | `common`                   | RFC 6234 vectors, file hashing (8 tests) |
+| `test_file_result_sink.cpp`  | `consumer_lib`             | JSON lines output, concurrent writes, stopping criteria (8 tests) |
+| `test_util.cpp`              | `common`                   | `parse_duration` suffix handling (5 tests) |
+| `test_thread_pool.cpp`       | `consumer_lib`             | Dispatch, failure counting, idle callback, drain, shutdown (7 tests) |
+| `test_echo.cpp`              | `producer_lib`, `consumer_lib` | ECHO plugin generation/resume + handler hash verification (10 tests) |
+| `test_socket.cpp`            | `common`                   | TCP/UDP frame round-trip, bidirectional, error paths (7 tests) |
 
-On Windows, run test executables directly rather than through `ctest` (GTest discovery
-is not reliably supported by `gtest_discover_tests` on all MSVC configurations).
+**Total: 110 tests.** On Windows, run test executables directly rather than through
+`ctest` (GTest discovery is not reliably supported by `gtest_discover_tests` on all
+MSVC configurations). The `EndToEnd_*` integration tests spawn the real
+`producer.exe`/`consumer.exe`, so build the full project first.
 
 ## 11. Known Design Decisions
 

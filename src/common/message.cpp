@@ -141,4 +141,29 @@ HeartbeatMessage HeartbeatMessage::from_string(const std::string& s) {
     return from_json(nlohmann::json::parse(s));
 }
 
+// ── VersionMessage ───────────────────────────────────────────────
+
+nlohmann::json VersionMessage::to_json() const {
+    nlohmann::json j;
+    j["msg_type"] = "version";
+    j["version"] = version;
+    j["consumer_id"] = consumer_id;
+    return j;
+}
+
+VersionMessage VersionMessage::from_json(const nlohmann::json& j) {
+    VersionMessage msg;
+    msg.version = j.value("version", "");
+    msg.consumer_id = j.value("consumer_id", "");
+    return msg;
+}
+
+std::string VersionMessage::to_string() const {
+    return to_json().dump();
+}
+
+VersionMessage VersionMessage::from_string(const std::string& s) {
+    return from_json(nlohmann::json::parse(s));
+}
+
 } // namespace pc

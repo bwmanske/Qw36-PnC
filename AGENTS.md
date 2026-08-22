@@ -2,14 +2,34 @@
 
 ## Build & Test
 
+Use the build scripts (`build.ps1` on Windows, `build.sh` on Linux). See `docs/BUILDING.md`.
+
 ```powershell
-# Configure (one-time or after CMakeLists.txt changes)
+# Quick build + test (PowerShell)
+.\build.ps1 -Target all
+
+# Build only
+.\build.ps1
+
+# Run tests only
+.\build.ps1 -Target test
+```
+
+```bash
+# Quick build + test (Bash)
+./build.sh all
+```
+
+**Manual cmake commands** (if scripts aren't available):
+
+```powershell
 cmake -B build -DBUILD_TESTS=ON
-
-# Build Release
 cmake --build build --config Release
+```
 
-# Run tests — ctest does NOT discover tests on Windows; run executables directly:
+Run tests directly (ctest does NOT discover tests on Windows):
+
+```
 build\tests\Release\test_message.exe
 build\tests\Release\test_queue.exe
 build\tests\Release\test_work_tracker.exe
@@ -18,7 +38,15 @@ build\tests\Release\test_integration.exe
 build\tests\Release\test_pwd_next_unit.exe
 build\tests\Release\test_sha256.exe
 build\tests\Release\test_file_result_sink.exe
+build\tests\Release\test_util.exe
+build\tests\Release\test_thread_pool.exe
+build\tests\Release\test_echo.exe
+build\tests\Release\test_socket.exe
 ```
+
+**Debug / shutdown options** (useful when running the executables by hand):
+- Producer `--max-time DUR` — stop after a duration; value may end in `s`/`m`/`h` (e.g. `30s`, `5m`, `1h`; bare number = seconds; `0` = no limit).
+- Consumer `--timeout SEC` — close after N seconds with no producer communication (`0` = no limit).
 
 ## MSVC Gotchas
 
@@ -42,7 +70,7 @@ Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the
 
 - **Control channel**: TCP on `--port`, length-prefixed JSON frames (4-byte big-endian `uint32_t` + UTF-8 payload).
 - **File transfer**: TCP on `port + 1`. Consumer sends `0x01` + null-terminated filename. Producer responds with 4-byte big-endian file size + raw bytes. Size `0` means file not found.
-- Three message types: `work_unit`, `result`, `work_request` (see `include/common/message.h`).
+- Five message types: `version` (handshake), `work_unit`, `result`, `work_request`, `heartbeat` (see `include/common/message.h`).
 
 ## Plugin Architecture
 
@@ -86,9 +114,8 @@ Consumer uses `IWorkUnitHandler` (`include/consumer/work_unit_handler.h`) and `I
 
 ## Remaining Tasks (see `docs/PROGRESS.md`)
 
-- Duplicate `work_unit_id` tracking in consumer — LRU cache (3000 entries)
-- Work request throttling (max 1/50ms, per consumer)
-- Consumer shutdown returns in-progress units as `"failure"`
-- Default `IResultSink` implementation
-- UDP transport integration
-- End-to-end integration test
+- `PWD_NextUnit` checkpoint state serialization for resume
+- Linux build verification
+- Performance benchmarking
+- Dashboard / telemetry endpoint
+- WebSocket or HTTP/2 transport option

@@ -63,6 +63,16 @@ struct HeartbeatMessage {
     static HeartbeatMessage from_string(const std::string& s);
 };
 
+struct VersionMessage {
+    std::string version;
+    std::string consumer_id;
+
+    nlohmann::json to_json() const;
+    static VersionMessage from_json(const nlohmann::json& j);
+    std::string to_string() const;
+    static VersionMessage from_string(const std::string& s);
+};
+
 } // namespace pc
 
 #endif // PC_MESSAGE_H

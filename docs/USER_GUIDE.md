@@ -4,8 +4,8 @@
 
 This system consists of two command-line applications:
 
-- **Producer** — Reads a JSON config file, initializes a test plugin (PWD or
-  BENCH), and dispatches work units to one or more Consumers over the network.
+- **Producer** — Reads a JSON config file, initializes a test plugin (PWD, BENCH,
+  or ECHO), and dispatches work units to one or more Consumers over the network.
 - **Consumer** — Connects to a Producer, downloads the source file if needed,
   processes work units using a thread pool, and returns results.
 
@@ -21,7 +21,7 @@ Ethernet using IPv4, with a choice of TCP or UDP transport.
 producer --file config.json
 
 # Terminal 2 — Start the Consumer
-consumer --handler PWD --result-file results.jsonl
+consumer --handler PWD
 ```
 
 With default settings, the Producer listens on `0.0.0.0:9876` and the Consumer
@@ -86,10 +86,12 @@ producer --file PATH [OPTIONS]
 | `--permutation`    | `sequential`   | Job dispatch order (see below)                   |
 | `--seed`           | current time   | Random seed for `random` permutation             |
 | `--duration`       | `0`            | Stop after N seconds (`0` = run until all jobs done) |
+| `--max-time`       | `0`            | Stop after a duration; value may end in `s`/`m`/`h` (e.g. `30s`, `5m`, `1h`; bare number = seconds; `0` = no limit) |
 | `--gateway`        | `192.168.1.1`  | Default local gateway IPv4 address               |
 | `--checkpoint-dir` | auto           | Directory for checkpoint state files (see Checkpoint Directory) |
 | `--resume`         | off            | Resume from the last checkpoint if one exists    |
-| `--test-type`      | from config    | Override test type (`PWD` or `BENCH`)            |
+| `--test-type`      | from config    | Override test type (`PWD`, `BENCH`, or `ECHO`)   |
+| `--transfer-siblings` | off         | Transfer all sibling files in the config directory to remote consumers |
 
 ### Permutation Modes
 
@@ -121,7 +123,7 @@ The config file is a single JSON object:
 
 | Field              | Required | Description                                      |
 |--------------------|----------|--------------------------------------------------|
-| `test_type`        | yes      | Test plugin: `PWD` (password permutation) or `BENCH` (file chunk benchmark) |
+| `test_type`        | yes      | Test plugin: `PWD` (password permutation), `BENCH` (file chunk benchmark), or `ECHO` (echo/verification) |
 | `config_file`      | no       | Path to the plugin-specific config file          |
 | `source_file`      | no       | Path to the source data file (e.g., archive for PWD, data file for BENCH) |
 | `duration`         | no       | Maximum run duration in seconds (`0` = no limit) |
@@ -146,6 +148,16 @@ verification. Useful for measuring throughput and bandwidth.
 
 - `source_file` should point to the data file to split
 - The file must exist and be accessible by the Producer
+
+#### ECHO — Echo/Verification Handler
+
+Generates sequential payloads (A-Z cycling) with configurable size and total
+units. The consumer verifies the payload hash and optionally applies a
+power-law distributed delay. Useful for testing throughput and latency.
+
+- `config_file` should point to the ECHO-specific config (e.g., `echo_config.json`)
+- Config fields: `payload_size` (default: 64), `total_units` (default: 1000),
+  `max_delay_sec` (consumer-side, default: 0 = no delay)
 
 ### Checkpoint and Resume
 
@@ -183,6 +195,35 @@ created automatically if it does not exist.
 | 0    | Normal completion or graceful shutdown |
 | 1    | Invalid arguments or bad config file |
 | 2    | Port already in use or fatal error   |
+
+### Sibling File Transfer
+
+When your source file is split across multiple parts (e.g., a split archive
+`data.bin.z01`, `data.bin.z02`, `data.bin.z03`), remote consumers need all
+parts to operate. Use `--transfer-siblings` to automatically transfer every
+file in the same directory as your config file to remote consumers.
+
+```bash
+producer --file config.json --transfer-siblings
+```
+
+The Producer scans the config file's directory, computes a SHA-256 hash for
+each file, and makes them available through the file transfer server. Remote
+consumers download all sibling files and verify their integrity before
+starting work. Local consumers (connecting to `127.0.0.1`) skip this step
+since they already have the files.
+
+**How it works:**
+1. Producer scans the config directory and builds a manifest of all sibling
+   files (excluding the config JSON itself) with name, size, and SHA-256 hash.
+2. On first work unit, the remote consumer requests the manifest via the file
+   transfer port (`port + 1`) using protocol code `0x02`.
+3. The consumer downloads each listed file via the existing `0x01` protocol
+   and verifies the SHA-256 hash after each download.
+4. Only after all files are verified does the consumer start processing work.
+
+If the manifest request fails (e.g., producer not ready), the consumer retries
+3 times with 2-second delays, then proceeds without additional files.
 
 ### Example Commands
 
@@ -222,7 +263,7 @@ consumer [OPTIONS]
 
 | Flag              | Description                                      |
 |-------------------|--------------------------------------------------|
-| `--handler`       | Work unit handler type: `PWD` or `BENCH`         |
+| `--handler`       | Work unit handler type: `PWD`, `BENCH`, or `ECHO` |
 
 ### Optional Arguments
 
@@ -237,7 +278,11 @@ consumer [OPTIONS]
 | `--local`         | off                | Force connection to `127.0.0.1`                  |
 | `--gateway`       | `192.168.1.1`      | Default local gateway IPv4 address               |
 | `--consumer-id`   | auto-generated     | Unique identifier for this Consumer              |
-| `--result-file`   | *(none)*           | Write results to JSON lines file                 |
+| `--handler-config`| *(none)*           | Path to handler-specific config file             |
+| `--result-file`   | auto-generated     | Write results to JSON lines file (default: `%APPDATA%\Producer\results_<id>.jsonl`) |
+| `--max-failures`  | `0`                | Stop after N failure results (`0` = no limit)    |
+| `--max-duration`  | `0`                | Stop after N seconds (`0` = no limit)            |
+| `--timeout`       | `0`                | Close after N seconds with no producer communication (`0` = no limit) |
 
 ### Thread Pool
 
@@ -266,6 +311,10 @@ The file transfer protocol: Consumer sends `0x01` + null-terminated filename.
 Producer responds with 4-byte big-endian file size + raw bytes. Size `0` means
 file not found.
 
+When the Producer was started with `--transfer-siblings`, the consumer also
+requests a manifest (`0x02`) and downloads each listed file, verifying SHA-256
+hashes. Work processing begins only after all files are verified.
+
 ### Consumer ID
 
 If you don't specify `--consumer-id`, the Consumer generates one automatically
@@ -280,9 +329,13 @@ consumer --handler PWD --consumer-id render-node-2
 
 ### Result File
 
-When `--result-file` is specified, the Consumer writes each result as a JSON
-line to the given file. The file is opened in append mode, so it can be
-tail-ed in real time.
+The Consumer always writes results to a JSON lines file. When `--result-file`
+is specified, it uses the given path. Otherwise, it defaults to:
+
+- **Windows**: `%APPDATA%\Producer\results_<consumer_id>.jsonl`
+- **Linux**: `~/.local/share/producer/results_<consumer_id>.jsonl`
+
+The file is opened in append mode, so it can be tail-ed in real time.
 
 Each line is the result message with `sink_stats` appended:
 
@@ -312,6 +365,7 @@ flooding the Producer.
 | 0    | Normal completion or graceful shutdown     |
 | 2    | Cannot connect to Producer after retries   |
 | 3    | Source file download or hash verification failed |
+| 4    | Version mismatch with Producer             |
 
 ### Example Commands
 
@@ -353,12 +407,13 @@ Ensure the following:
 | Channel | Protocol | Port | Description |
 |---------|----------|------|-------------|
 | Control | TCP/UDP | `--port` | Length-prefixed JSON frames (4-byte big-endian `uint32_t` + UTF-8 payload) |
-| File Transfer | TCP | `--port + 1` | Binary protocol: `0x01` + filename, response: size + bytes |
+| File Transfer | TCP | `--port + 1` | Binary protocol: `0x01` + filename → size + bytes; `0x02` → JSON manifest |
 
 ### Message Types
 
 | Type | Direction | Description |
 |------|-----------|-------------|
+| `version` | Consumer → Producer | Handshake on connect; carries the consumer's protocol version (mismatch exits consumer with code 4) |
 | `work_unit` | Producer → Consumer | Contains test data for processing |
 | `result` | Consumer → Producer | Processing outcome with status |
 | `work_request` | Consumer → Producer | Requests more work, includes available thread count |
@@ -375,12 +430,14 @@ Ensure the following:
 
 ### UDP Mode
 
-In UDP mode, the Producer sends datagrams to the Consumer's address. UDP is
-connectionless — the Producer does not track individual Consumer connections.
-Use TCP when you need reliable delivery and work unit tracking.
+In UDP mode, both sides use datagrams instead of TCP connections. The Producer
+tracks UDP consumers by their IP:port address, maintains activity timestamps,
+and reclaims work units from stale consumers just as with TCP. UDP is
+connectionless — there is no TCP handshake or connection teardown.
 
 **Note**: UDP datagrams are limited to the network MTU (typically 1500 bytes).
-Work units larger than the MTU are dropped with a warning.
+Work units larger than the MTU may be dropped. File transfer always uses TCP
+(port+1) regardless of the control channel transport.
 
 ## 6. Monitoring Progress
 
@@ -529,12 +586,13 @@ The Producer uses a `TestPlugin` dispatch table with four functions:
 | `checkpoint()` | Returns plugin-specific state for checkpoint merge |
 | `exit_conditions()` | Returns `true` when the plugin wants to stop |
 
-Built-in plugins: `PWD` and `BENCH`.
+Built-in plugins: `PWD`, `BENCH`, and `ECHO`.
 
 ### Consumer Handlers
 
 The Consumer uses `IWorkUnitHandler` to process work units and `IResultSink`
-to record results. Built-in handlers: `PWD_Handler` and `BENCH_Handler`.
+to record results. Built-in handlers: `PWD_Handler`, `BENCH_Handler`, and
+`ECHO_Handler`.
 
 ### Adding a New Test Type
 

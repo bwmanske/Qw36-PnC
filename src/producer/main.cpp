@@ -1,6 +1,7 @@
 #include "producer/producer.h"
 #include "common/signal_handler.h"
 #include "common/util.h"
+#include "common/version.h"
 #include <iostream>
 #include <fstream>
 #include <filesystem>
@@ -18,13 +19,17 @@ static void print_usage() {
               << "  --permutation MODE     Job permutation: sequential, random, round_robin, reverse (default: sequential)\n"
               << "  --seed N               PRNG seed for random permutation\n"
               << "  --duration SECS        Run duration in seconds (0 = run until done)\n"
+              << "  --max-time DUR         Max time before shutdown (e.g. 30s, 5m, 1h; 0 = no limit)\n"
               << "  --gateway IP           Default local gateway IPv4 (default: 192.168.1.1)\n"
               << "  --checkpoint-dir DIR   Directory for checkpoint files (default: ./)\n"
-              << "  --resume               Resume from checkpoint if one exists\n"
-              << "  --test-type TYPE       Test type identifier (e.g. PWD)\n";
+               << "  --resume               Resume from checkpoint if one exists\n"
+               << "  --test-type TYPE       Test type identifier (e.g. PWD)\n"
+               << "  --transfer-siblings    Transfer all sibling files in config directory to remote consumers\n";
 }
 
 int run_producer(int argc, char* argv[]) {
+    std::cout << "[producer] v" << PC_VERSION << "\n";
+
     ProducerConfig config;
 
     // Parse arguments
@@ -43,6 +48,8 @@ int run_producer(int argc, char* argv[]) {
             config.seed = std::stoll(argv[++i]);
         } else if (arg == "--duration" && i + 1 < argc) {
             config.duration = std::stoi(argv[++i]);
+        } else if (arg == "--max-time" && i + 1 < argc) {
+            config.max_time_sec = parse_duration(argv[++i]);
         } else if (arg == "--gateway" && i + 1 < argc) {
             config.gateway = argv[++i];
         } else if (arg == "--checkpoint-dir" && i + 1 < argc) {
@@ -51,6 +58,8 @@ int run_producer(int argc, char* argv[]) {
             config.resume = true;
         } else if (arg == "--test-type" && i + 1 < argc) {
             config.test_type = argv[++i];
+        } else if (arg == "--transfer-siblings") {
+            config.transfer_siblings = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage();
             return 0;

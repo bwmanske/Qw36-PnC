@@ -147,6 +147,70 @@ TEST(FileResultSink, ShouldStop) {
     fs::remove(path);
 }
 
+TEST(FileResultSink, ShouldStop_MaxFailures) {
+    std::string path = test_file();
+    {
+        FileResultSink sink(path, 3, 0); // stop after 3 failures
+
+        for (int i = 0; i < 2; i++) {
+            ResultMessage r;
+            r.work_unit_id = "wu-" + std::to_string(i);
+            r.seq = i;
+            r.consumer_id = "cons-001";
+            r.status = "failure";
+            r.result = nlohmann::json::object();
+            r.timestamp = "2026-01-01T00:00:00.000Z";
+            sink.on_result(r);
+        }
+
+        EXPECT_FALSE(sink.should_stop()); // 2 failures < 3 threshold
+
+        ResultMessage r3;
+        r3.work_unit_id = "wu-2";
+        r3.seq = 2;
+        r3.consumer_id = "cons-001";
+        r3.status = "failure";
+        r3.result = nlohmann::json::object();
+        r3.timestamp = "2026-01-01T00:00:00.000Z";
+        sink.on_result(r3);
+
+        EXPECT_TRUE(sink.should_stop()); // 3 failures >= 3 threshold
+    }
+    fs::remove(path);
+}
+
+TEST(FileResultSink, ShouldStop_MaxDuration) {
+    std::string path = test_file();
+    {
+        FileResultSink sink(path, 0, 1); // stop after 1 second
+        EXPECT_FALSE(sink.should_stop());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1100));
+        EXPECT_TRUE(sink.should_stop());
+    }
+    fs::remove(path);
+}
+
+TEST(FileResultSink, ShouldStop_NoCriteria) {
+    std::string path = test_file();
+    {
+        FileResultSink sink(path, 0, 0); // no criteria
+
+        for (int i = 0; i < 10; i++) {
+            ResultMessage r;
+            r.work_unit_id = "wu-" + std::to_string(i);
+            r.seq = i;
+            r.consumer_id = "cons-001";
+            r.status = "failure";
+            r.result = nlohmann::json::object();
+            r.timestamp = "2026-01-01T00:00:00.000Z";
+            sink.on_result(r);
+        }
+
+        EXPECT_FALSE(sink.should_stop());
+    }
+    fs::remove(path);
+}
+
 TEST(FileResultSink, Summary_FilePath) {
     std::string path = test_file();
     {

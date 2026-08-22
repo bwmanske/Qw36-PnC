@@ -22,6 +22,14 @@ std::string sha256_bytes(const uint8_t* data, size_t len);
 /// Creates the directory if it does not exist.
 std::string get_data_directory();
 
+// ── Duration parsing ─────────────────────────────────────────────
+
+/// Parse a duration string into seconds.
+/// Accepts a bare number (seconds) or a number followed by
+/// 's' (seconds), 'm' (minutes), or 'h' (hours).
+/// Returns 0 for empty input.
+int parse_duration(const std::string& s);
+
 } // namespace pc
 
 #endif // PC_UTIL_H

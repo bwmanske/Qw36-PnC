@@ -1,10 +1,13 @@
 #include "consumer/consumer.h"
 #include "common/signal_handler.h"
+#include "common/version.h"
 #include "consumer/PWD_Handler.h"
 #include <iostream>
 #include <memory>
 
 int main(int argc, char* argv[]) {
+    std::cout << "[consumer] v" << pc::PC_VERSION << "\n";
+
     pc::ConsumerConfig config;
 
     for (int i = 1; i < argc; i++) {
@@ -30,8 +33,16 @@ int main(int argc, char* argv[]) {
             config.consumer_id = argv[++i];
         } else if (arg == "--handler" && i + 1 < argc) {
             config.handler_type = argv[++i];
+        } else if (arg == "--handler-config" && i + 1 < argc) {
+            config.handler_config = argv[++i];
         } else if (arg == "--result-file" && i + 1 < argc) {
             config.result_file = argv[++i];
+        } else if (arg == "--max-failures" && i + 1 < argc) {
+            config.max_failures = std::stoi(argv[++i]);
+        } else if (arg == "--max-duration" && i + 1 < argc) {
+            config.max_duration_sec = std::stoi(argv[++i]);
+        } else if (arg == "--timeout" && i + 1 < argc) {
+            config.idle_timeout_sec = std::stoi(argv[++i]);
         } else if (arg == "--help" || arg == "-h") {
             std::cerr << "Usage: consumer [OPTIONS]\n"
                       << "\nOptions:\n"
@@ -44,8 +55,12 @@ int main(int argc, char* argv[]) {
                       << "  --local              Force localhost connection\n"
                       << "  --gateway IP         Default gateway (default: 192.168.1.1)\n"
                        << "  --consumer-id ID     Consumer identifier\n"
-                       << "  --handler TYPE       Work unit handler type (e.g. PWD)\n"
-                       << "  --result-file FILE   Write results to JSON lines file\n";
+                        << "  --handler TYPE       Work unit handler type (e.g. PWD)\n"
+                        << "  --handler-config F   Config file for handler options\n"
+                        << "  --result-file FILE   Write results to JSON lines file\n"
+                        << "  --max-failures N     Stop after N failures (0 = no limit)\n"
+                        << "  --max-duration SEC   Stop after N seconds (0 = no limit)\n"
+                        << "  --timeout SEC        Close after N seconds without producer communication (0 = no limit)\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";

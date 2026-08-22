@@ -106,3 +106,113 @@ TEST(WorkRequestMessage, MsgType) {
     nlohmann::json j = msg.to_json();
     EXPECT_EQ(j["msg_type"], "work_request");
 }
+
+TEST(WorkUnitMessage, TestTypeRoundTrip) {
+    WorkUnitMessage msg;
+    msg.test_type = "ECHO";
+    msg.work_unit_id = "prod-001-0";
+    msg.seq = 0;
+    msg.job = nlohmann::json::object();
+
+    WorkUnitMessage decoded = WorkUnitMessage::from_string(msg.to_string());
+    EXPECT_EQ(decoded.test_type, "ECHO");
+}
+
+TEST(WorkUnitMessage, MissingFieldsDefaults) {
+    nlohmann::json j = nlohmann::json::parse(R"({"msg_type":"work_unit"})");
+    WorkUnitMessage msg = WorkUnitMessage::from_json(j);
+
+    EXPECT_EQ(msg.test_type, "");
+    EXPECT_EQ(msg.source_file, "");
+    EXPECT_EQ(msg.work_unit_id, "");
+    EXPECT_EQ(msg.seq, 0);
+    EXPECT_FALSE(msg.permutation_seed.has_value());
+    EXPECT_FALSE(msg.source_hash.has_value());
+    EXPECT_TRUE(msg.job.is_object());
+}
+
+TEST(ResultMessage, OptionalFields) {
+    ResultMessage msg;
+    msg.work_unit_id = "prod-001-7";
+    msg.seq = 7;
+    msg.consumer_id = "cons-001";
+    msg.status = "success";
+    msg.result = nlohmann::json::object();
+    msg.timestamp = "2026-01-01T00:00:03.000Z";
+    msg.found_password = "hunter2";
+    msg.file_error = "disk full";
+
+    ResultMessage decoded = ResultMessage::from_string(msg.to_string());
+    ASSERT_TRUE(decoded.found_password.has_value());
+    ASSERT_TRUE(decoded.file_error.has_value());
+    EXPECT_EQ(decoded.found_password.value(), "hunter2");
+    EXPECT_EQ(decoded.file_error.value(), "disk full");
+}
+
+TEST(ResultMessage, OptionalFieldsAbsent) {
+    ResultMessage msg;
+    msg.work_unit_id = "prod-001-8";
+    msg.seq = 8;
+    msg.consumer_id = "cons-001";
+    msg.status = "success";
+    msg.result = nlohmann::json::object();
+    msg.timestamp = "2026-01-01T00:00:04.000Z";
+
+    nlohmann::json j = msg.to_json();
+    EXPECT_FALSE(j.contains("found_password"));
+    EXPECT_FALSE(j.contains("file_error"));
+
+    ResultMessage decoded = ResultMessage::from_string(msg.to_string());
+    EXPECT_FALSE(decoded.found_password.has_value());
+    EXPECT_FALSE(decoded.file_error.has_value());
+}
+
+TEST(HeartbeatMessage, RoundTrip) {
+    HeartbeatMessage original;
+    original.consumer_id = "cons-001";
+    original.timestamp = "2026-01-01T00:00:05.000Z";
+
+    std::string s = original.to_string();
+    HeartbeatMessage decoded = HeartbeatMessage::from_string(s);
+
+    EXPECT_EQ(decoded.consumer_id, original.consumer_id);
+    EXPECT_EQ(decoded.timestamp, original.timestamp);
+}
+
+TEST(HeartbeatMessage, MsgType) {
+    HeartbeatMessage msg;
+    msg.consumer_id = "cons-001";
+    msg.timestamp = "2026-01-01T00:00:05.000Z";
+
+    nlohmann::json j = msg.to_json();
+    EXPECT_EQ(j["msg_type"], "heartbeat");
+}
+
+TEST(VersionMessage, RoundTrip) {
+    VersionMessage original;
+    original.version = "0.6";
+    original.consumer_id = "cons-001";
+
+    std::string s = original.to_string();
+    VersionMessage decoded = VersionMessage::from_string(s);
+
+    EXPECT_EQ(decoded.version, original.version);
+    EXPECT_EQ(decoded.consumer_id, original.consumer_id);
+}
+
+TEST(VersionMessage, MsgType) {
+    VersionMessage msg;
+    msg.version = "0.6";
+    msg.consumer_id = "cons-001";
+
+    nlohmann::json j = msg.to_json();
+    EXPECT_EQ(j["msg_type"], "version");
+}
+
+TEST(VersionMessage, MissingFieldsDefaults) {
+    nlohmann::json j = nlohmann::json::parse(R"({"msg_type":"version"})");
+    VersionMessage msg = VersionMessage::from_json(j);
+
+    EXPECT_EQ(msg.version, "");
+    EXPECT_EQ(msg.consumer_id, "");
+}

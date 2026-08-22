@@ -27,7 +27,7 @@
 
 ### Build & Test
 - [x] Windows build (MSVC): `producer.exe` + `consumer.exe`
-- [x] 66/67 unit tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink)
+- [x] 110/110 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, socket)
 - [x] Test libraries: `producer_lib`, `consumer_lib` for test linking
 
 ### Pluggable Handler Architecture
@@ -69,14 +69,16 @@
 - [x] Disconnect logging — log consumer disconnect + count of reclaimed work units
 - [x] Socket recv timeout — bounded detection of dead connections (no infinite recv block)
 - [x] Duplicate `work_unit_id` tracking in consumer — LRU cache (3000 entries, list + unordered_set)
-- [ ] Consumer shutdown returns in-progress units as `"failure"` results
-- [ ] Default `IResultSink` implementation (file-based result storage)
+- [x] Consumer shutdown returns in-progress units as `"failure"` results
+- [x] Default `IResultSink` implementation (file-based result storage)
 
 ### Medium Priority
-- [ ] UDP transport integration in producer/consumer logic
-- [ ] End-to-end integration test (spawn producer + consumer, verify full cycle)
-- [ ] Stopping criteria in `IResultSink` (max failures, time limit, etc.)
-- [ ] Additional handler types (XXX_NextUnit + XXX_Handler pairs)
+- [x] UDP transport integration in producer/consumer logic
+- [x] End-to-end integration test (spawn producer + consumer, verify full cycle) — `Integration.EndToEnd_ECHO_FullCycle` + `Integration.EndToEnd_TimeoutShutdown`
+- [x] Stopping criteria in `IResultSink` (max failures, time limit, etc.)
+- [x] Additional handler types (XXX_NextUnit + XXX_Handler pairs)
+- [x] Producer `--max-time DUR` and consumer `--timeout SEC` shutdown options (`parse_duration` in `common/util`)
+- [x] Consumer idle safety net — main loop requests work when pool is fully idle (`ThreadPool::queue_empty()`)
 - [ ] `PWD_NextUnit` checkpoint state serialization for resume
 
 ### Low Priority
@@ -87,8 +89,8 @@
 
 ## Open Questions
 
-1. **ResultSink default behavior** — Should the default sink write results to a file, stdout, or both? What format (JSON lines, CSV, structured)?
-2. **Stopping criteria** — What conditions should trigger the Consumer to stop? Options: max failures, max duration, all work consumed, explicit signal from Producer.
+1. **ResultSink default behavior** — ~~Should the default sink write results to a file, stdout, or both? What format (JSON lines, CSV, structured)?~~ **RESOLVED**: File-based JSONL with auto-generated path.
+2. **Stopping criteria** — ~~What conditions should trigger the Consumer to stop? Options: max failures, max duration, all work consumed, explicit signal from Producer.~~ **RESOLVED**: `max_failures` and `max_duration_sec` via `FileResultSink`.
 3. **PWD_NextUnit integration** — Should the Producer use `PWD_NextUnit` as a drop-in replacement for the job-file-based dispatch, or should it be an alternative mode (`--test-type PWD`)?
 4. **Handler discovery** — Should handlers be compiled-in (current approach) or loadable via plugins/dlls?
 5. **Checkpoint for PWD tests** — The `PWD_NextUnit` class has internal state (charIndicies, testPwdLen). Should this state be serialized into the checkpoint so the Producer can resume mid-permutation?
@@ -109,7 +111,7 @@ cmake --build build --config Release
 
 # Run tests
 ctest --test-dir build -C Release
-# Or run individual test executables directly:
+# Or run individual test executables directly (ctest does NOT discover tests on Windows):
 build/tests/Release/test_message.exe
 build/tests/Release/test_queue.exe
 build/tests/Release/test_work_tracker.exe
@@ -118,6 +120,10 @@ build/tests/Release/test_integration.exe
 build/tests/Release/test_pwd_next_unit.exe
 build/tests/Release/test_sha256.exe
 build/tests/Release/test_file_result_sink.exe
+build/tests/Release/test_util.exe
+build/tests/Release/test_thread_pool.exe
+build/tests/Release/test_echo.exe
+build/tests/Release/test_socket.exe
 ```
 
 ## File Tree
@@ -126,8 +132,11 @@ build/tests/Release/test_file_result_sink.exe
 project/
 ├── CMakeLists.txt
 ├── docs/
+│   ├── BUILDING.md
+│   ├── COMMUNICATION.md
 │   ├── IMPLEMENTATION.md
 │   ├── PROGRESS.md              ← this file
+│   ├── TESTING.md
 │   └── USER_GUIDE.md
 ├── specs/
 │   ├── spec.md
@@ -150,6 +159,7 @@ project/
 │   │   ├── work_unit_handler.h  ← IWorkUnitHandler interface
 │   │   ├── PWD_Handler.h
 │   │   ├── BENCH_Handler.h
+│   │   ├── ECHO_Handler.h
 │   │   └── file_result_sink.h   ← IResultSink implementation
 │   └── producer/
 │       ├── producer.h           ← plugin architecture
@@ -157,7 +167,8 @@ project/
 │       ├── work_unit_generator.h ← IWorkUnitGenerator interface
 │       ├── test_plugin.h        ← TestPlugin dispatch table
 │       ├── PWD_plugin.h
-│       └── BENCH_plugin.h
+│       ├── BENCH_plugin.h
+│       └── ECHO_plugin.h
 ├── src/
 │   ├── common/
 │   │   ├── checkpoint.cpp
@@ -174,6 +185,8 @@ project/
 │   │   ├── PWD_Handler.h
 │   │   ├── BENCH_Handler.cpp    ← BENCH chunk comparison handler
 │   │   ├── BENCH_Handler.h
+│   │   ├── ECHO_Handler.cpp     ← ECHO echo/verification handler
+│   │   ├── ECHO_Handler.h
 │   │   ├── file_result_sink.cpp ← JSON lines + sink_stats
 │   │   └── thread_pool.cpp      ← dispatches through IWorkUnitHandler
 │   └── producer/
@@ -183,15 +196,20 @@ project/
 │       ├── PWD_NextUnit.h       ← renamed from permutations.h
 │       ├── PWD_plugin.cpp       ← PWD_StartUp, PWD_NextUnit, PWD_CheckPoint, PWD_ExitConditions
 │       ├── BENCH_plugin.cpp     ← BENCH_StartUp, BENCH_NextUnit, BENCH_CheckPoint, BENCH_ExitConditions
+│       ├── ECHO_plugin.cpp      ← ECHO_StartUp, ECHO_NextUnit, ECHO_CheckPoint, ECHO_ExitConditions
 │       └── work_tracker.cpp
 └── tests/
     ├── CMakeLists.txt
     ├── test_checkpoint.cpp
+    ├── test_echo.cpp
     ├── test_file_result_sink.cpp
     ├── test_integration.cpp
     ├── test_message.cpp
     ├── test_pwd_next_unit.cpp
     ├── test_queue.cpp
     ├── test_sha256.cpp
+    ├── test_socket.cpp
+    ├── test_thread_pool.cpp
+    ├── test_util.cpp
     └── test_work_tracker.cpp
 ```

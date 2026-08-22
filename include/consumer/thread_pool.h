@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <memory>
+#include <unordered_map>
 #include "common/types.h"
 #include "common/message.h"
 #include "common/queue.h"
@@ -25,10 +26,13 @@ public:
     void submit(WorkUnitMessage work);
     size_t idle_count() const;
     size_t active_count() const;
+    bool queue_empty() const;
     size_t total_completed() const;
     size_t total_failed() const;
 
     void set_handler(std::shared_ptr<IWorkUnitHandler> handler);
+
+    std::vector<WorkUnitMessage> drain_pending();
 
     using ResultCallback = std::function<void(const ResultMessage&)>;
     void set_result_callback(ResultCallback cb);
@@ -52,6 +56,9 @@ private:
     ResultCallback result_callback_;
     IdleCallback idle_callback_;
     std::mutex callback_mutex_;
+
+    std::unordered_map<std::string, WorkUnitMessage> active_work_;
+    std::mutex active_work_mutex_;
 };
 
 } // namespace pc

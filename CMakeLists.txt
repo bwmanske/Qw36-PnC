@@ -79,6 +79,7 @@ add_library(producer_lib STATIC
     src/producer/PWD_NextUnit.cpp
     src/producer/PWD_plugin.cpp
     src/producer/BENCH_plugin.cpp
+    src/producer/ECHO_plugin.cpp
 )
 target_include_directories(producer_lib PUBLIC include src/producer)
 target_link_libraries(producer_lib PUBLIC common)
@@ -89,6 +90,7 @@ add_library(consumer_lib STATIC
     src/consumer/thread_pool.cpp
     src/consumer/PWD_Handler.cpp
     src/consumer/BENCH_Handler.cpp
+    src/consumer/ECHO_Handler.cpp
     src/consumer/file_result_sink.cpp
 )
 target_include_directories(consumer_lib PUBLIC include src/consumer)

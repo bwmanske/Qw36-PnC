@@ -14,25 +14,35 @@ build\tests\Release\test_integration.exe
 build\tests\Release\test_pwd_next_unit.exe
 build\tests\Release\test_sha256.exe
 build\tests\Release\test_file_result_sink.exe
+build\tests\Release\test_util.exe
+build\tests\Release\test_thread_pool.exe
+build\tests\Release\test_echo.exe
+build\tests\Release\test_socket.exe
 ```
+
+The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` and `consumer.exe` processes, so the main executables must be built first (`cmake --build build --config Release` builds everything).
 
 ## Test Suite Overview
 
 | Suite | Target | Tests | Links Against |
 |-------|--------|-------|---------------|
-| `test_message` | `test_message.exe` | 6 | `common` |
+| `test_message` | `test_message.exe` | 15 | `common` |
 | `test_queue` | `test_queue.exe` | 8 | `common` |
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 6 | `common` |
-| `test_integration` | `test_integration.exe` | 4 | `producer_lib`, `consumer_lib` |
+| `test_integration` | `test_integration.exe` | 6 | `producer_lib`, `consumer_lib` |
 | `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 20 | `producer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
-| `test_file_result_sink` | `test_file_result_sink.exe` | 5 | `consumer_lib` |
-| **Total** | | **67** | |
+| `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
+| `test_util` | `test_util.exe` | 5 | `common` |
+| `test_thread_pool` | `test_thread_pool.exe` | 7 | `consumer_lib` |
+| `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
+| `test_socket` | `test_socket.exe` | 7 | `common` |
+| **Total** | | **110** | |
 
 ---
 
-## test_message (6 tests)
+## test_message (15 tests)
 
 ### WorkUnitMessage
 
@@ -40,6 +50,8 @@ build\tests\Release\test_file_result_sink.exe
 |------|-----------------|
 | `RoundTrip` | All fields (source_file, permutation, permutation_seed, work_unit_id, seq, timestamp, producer_id, job, source_hash) survive `to_string()` → `from_string()` serialization |
 | `OptionalFields` | `permutation_seed` and `source_hash` are omitted from JSON when not set; `msg_type` is always `"work_unit"` |
+| `TestTypeRoundTrip` | `test_type` (e.g. `"ECHO"`) survives serialization round-trip |
+| `MissingFieldsDefaults` | Parsing a bare `{"msg_type":"work_unit"}` yields empty strings, `seq=0`, no optional fields, and an empty JSON object for `job` |
 
 ### ResultMessage
 
@@ -47,6 +59,8 @@ build\tests\Release\test_file_result_sink.exe
 |------|-----------------|
 | `RoundTrip` | All fields (work_unit_id, seq, consumer_id, status, result, timestamp) survive serialization round-trip |
 | `FailureStatus` | `status: "failure"` serializes correctly; `msg_type` is `"result"` |
+| `OptionalFields` | Optional `found_password` and `file_error` fields survive round-trip when set |
+| `OptionalFieldsAbsent` | `found_password` and `file_error` are omitted from JSON when not set and parse back as `nullopt` |
 
 ### WorkRequestMessage
 
@@ -54,6 +68,21 @@ build\tests\Release\test_file_result_sink.exe
 |------|-----------------|
 | `RoundTrip` | All fields (consumer_id, threads_available, timestamp) survive serialization round-trip |
 | `MsgType` | `msg_type` is `"work_request"` in serialized JSON |
+
+### HeartbeatMessage
+
+| Test | What It Verifies |
+|------|-----------------|
+| `RoundTrip` | All fields (consumer_id, timestamp) survive `to_string()` → `from_string()` serialization |
+| `MsgType` | `msg_type` is `"heartbeat"` in serialized JSON |
+
+### VersionMessage
+
+| Test | What It Verifies |
+|------|-----------------|
+| `RoundTrip` | All fields (version, consumer_id) survive `to_string()` → `from_string()` serialization |
+| `MsgType` | `msg_type` is `"version"` in serialized JSON |
+| `MissingFieldsDefaults` | Parsing a bare `{"msg_type":"version"}` yields empty `version` and `consumer_id` |
 
 ---
 
@@ -113,7 +142,7 @@ build\tests\Release\test_file_result_sink.exe
 
 ---
 
-## test_integration (4 tests)
+## test_integration (6 tests)
 
 ### Integration
 
@@ -123,6 +152,10 @@ build\tests\Release\test_file_result_sink.exe
 | `WorkTrackerFullCycle` | End-to-end lifecycle: add 5 entries → dispatch 3 to a consumer → complete 2 → simulate consumer disconnect → verify re-dispatch of 1 remaining sent unit → checkpoint reflects 2 completed |
 | `CheckpointResume` | Save checkpoint at seq 49 → load it → resume index is 50 (last_completed_seq + 1); permutation_seed is preserved |
 | `MessageSerializationAllTypes` | All three message types (`WorkUnitMessage`, `ResultMessage`, `WorkRequestMessage`) serialize and deserialize correctly with realistic payloads |
+| `EndToEnd_ECHO_FullCycle` | Spawns the real `producer.exe` + `consumer.exe` processes (ECHO test type, 5 units): verifies both exit 0, the result file has ≥5 success lines with a hash `match: true`, and a checkpoint file was written |
+| `EndToEnd_TimeoutShutdown` | Spawns producer (`--max-time 2s`, unlimited units) + consumer (`--timeout 5`): verifies the producer log contains `Max time reached` and the consumer log contains `Idle timeout`, and both exit 0 |
+
+The two `EndToEnd_*` tests require the main executables to be built and use fixed loopback ports (19876/19877); each cleans up its temp directory on exit.
 
 ---
 
@@ -189,7 +222,7 @@ build\tests\Release\test_file_result_sink.exe
 | `EmptyString` | `sha256_bytes(nullptr, 0)` returns the known hash for empty input: `e3b0c442...` |
 | `RFC6234_abc` | `sha256_bytes("abc", 3)` matches RFC 6234 Appendix A: `ba7816bf...` |
 | `RFC6234_abcabc` | 64-byte message `"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"` matches RFC 6234: `248d6a61...` |
-| `RFC6234_a_repeated_1million` | 1,000,000 `'a'` bytes match RFC 6234: `cdc76f52...` (**PENDING** — implementation produces `cdc76e5c...`, bug under investigation) |
+| `RFC6234_a_repeated_1million` | 1,000,000 `'a'` bytes match expected value `cdc76e5c...` (verified against .NET SHA256) |
 
 ### SHA-256 — File hashing
 
@@ -207,7 +240,7 @@ build\tests\Release\test_file_result_sink.exe
 
 ---
 
-## test_file_result_sink (5 tests)
+## test_file_result_sink (8 tests)
 
 ### FileResultSink
 
@@ -216,8 +249,86 @@ build\tests\Release\test_file_result_sink.exe
 | `WritesJsonLines` | `on_result()` writes a single JSON line to disk with `msg_type`, `status`, and `sink_stats` fields |
 | `CountsSuccessesAndFailures` | After 3 results (2 success, 1 failure), `summary()` returns `total=3`, `successes=2`, `failures=1` |
 | `ConcurrentWrites` | 10 threads each writing 1 result produces exactly 10 lines in the output file (thread-safe) |
-| `ShouldStop` | `should_stop()` always returns `false` |
+| `ShouldStop_Default` | With no stopping criteria (both defaults 0), `should_stop()` always returns `false` |
+| `ShouldStop_MaxFailures` | With `max_failures=2`, `should_stop()` returns `true` after 2 failure results |
+| `ShouldStop_MaxDuration` | With `max_duration_sec=1`, `should_stop()` returns `true` after elapsed time exceeds the limit |
+| `ShouldStop_NoCriteria` | With `max_failures=0` and `max_duration_sec=0`, `should_stop()` returns `false` regardless of results or elapsed time |
 | `Summary_FilePath` | `summary()["file"]` matches the constructor's `file_path` argument |
+
+---
+
+## test_util (5 tests)
+
+### ParseDuration
+
+| Test | What It Verifies |
+|------|-----------------|
+| `BareSeconds` | Bare numbers parse as seconds (`"30"` → 30, `"0"` → 0, `"3600"` → 3600) |
+| `SecondsSuffix` | `s` suffix parses as seconds (`"30s"` → 30, `"90s"` → 90) |
+| `MinutesSuffix` | `m` suffix parses as minutes (`"1m"` → 60, `"5m"` → 300, `"90m"` → 5400) |
+| `HoursSuffix` | `h` suffix parses as hours (`"1h"` → 3600, `"2h"` → 7200, `"12h"` → 43200) |
+| `Empty` | Empty string returns 0 |
+
+---
+
+## test_thread_pool (7 tests)
+
+### ThreadPool
+
+| Test | What It Verifies |
+|------|-----------------|
+| `SubmitWithHandler_Completes` | 10 submitted work units are all processed by a success handler; `total_completed()==10`, result callback fires 10 times |
+| `FailingHandler_CountsFailures` | A handler that always fails produces `total_failed()==5`, `total_completed()==0`, and failure results |
+| `NoHandler_FailsWithNoHandlerError` | Submitting with no handler registered yields a failure result with `error: "no handler registered"` |
+| `IdleCallback_Invoked` | The idle callback fires with a non-zero idle count after work completes (drives work requests) |
+| `DrainPending_ReturnsQueuedWork` | `drain_pending()` on an unstarted pool returns all queued work units in order |
+| `DrainPending_IncludesActiveWork` | `drain_pending()` includes a work unit currently being processed (used to return in-flight units as failures on shutdown) |
+| `Shutdown_JoinsAndIsIdempotent` | `shutdown()` joins all workers and is safe to call twice; all submitted work is accounted for |
+
+---
+
+## test_echo (10 tests)
+
+### ECHO plugin (producer side)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `IsValid` | `create_echo_plugin()` returns a valid `TestPlugin` dispatch table |
+| `GeneratesTotalUnitsThenExhausts` | With `total_units=5`, exactly 5 units are generated (each with `task:"ECHO"`, 16-byte payload, non-empty hash), then `next_unit()` returns `false` |
+| `ExitConditions` | `exit_conditions()` is `false` until all units are generated, then `true` |
+| `CheckpointState` | `checkpoint()` returns `generated`, `seq`, `payload_size`, `total_units` after 3 units |
+| `ResumeFromCheckpoint` | Starting with a resume state of `generated=3`/`seq=3` produces only the remaining 2 units |
+| `UnlimitedUnits` | With `total_units=0`, units are generated indefinitely and `exit_conditions()` stays `false` |
+
+### ECHO handler (consumer side)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `Type` | `handler.type()` returns `"ECHO"` |
+| `HashMatch` | A payload whose SHA-256 matches `job.hash` yields `status:"success"` with `match:true`, correct `payload_size` and `actual_hash` |
+| `HashMismatch` | A payload whose hash does not match yields `status:"success"` with `match:false` (mismatch is reported, not an error) |
+| `EmptyPayload` | An empty payload with the empty-input SHA-256 yields `match:true` and `payload_size:0` |
+
+---
+
+## test_socket (7 tests)
+
+### SocketFrame — TCP
+
+| Test | What It Verifies |
+|------|-----------------|
+| `TcpRoundTrip` | A JSON frame sent via `send_frame()` is received intact via `recv_frame()` over a loopback TCP connection |
+| `TcpMultipleFrames` | 5 consecutive frames arrive in order with intact payloads |
+| `TcpBidirectional` | Both client and server can send and receive frames on the same connection |
+| `TcpEmptyPayload` | A zero-length frame round-trips as an empty string |
+| `TcpRecvAfterClose_Throws` | `recv_frame()` on a closed peer throws `std::runtime_error` |
+
+### SocketFrame — UDP
+
+| Test | What It Verifies |
+|------|-----------------|
+| `UdpRoundTrip` | A frame sent via `send_frame_udp()` is received via `recv_frame_udp()` with the correct source address/port |
+| `UdpMultipleFrames` | 3 consecutive UDP frames are received in order |
 
 ---
 
@@ -226,12 +337,11 @@ build\tests\Release\test_file_result_sink.exe
 The following require running the actual executables or network connectivity:
 
 - File transfer protocol over `port + 1`
-- TCP/UDP socket framing (`send_frame` / `recv_frame`)
-- Signal handling and graceful shutdown
-- Producer-consumer end-to-end communication
-- Thread pool execution and handler dispatch
+- UDP `udp_loop` and version handshake over UDP (UDP framing itself is covered by `test_socket`)
+- Signal handling and graceful shutdown (SIGINT/SIGTERM paths)
 - `PWD_Handler` processing
+- `BENCH_Handler` processing
 - `ArchiveValidator` with real archive files
 - Multi-consumer connections and re-dispatch
 - Work request throttling
-- Heartbeat protocol and consumer registration
+- Heartbeat protocol and consumer registration (message serialization is covered by `test_message`)

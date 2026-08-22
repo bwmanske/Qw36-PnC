@@ -86,7 +86,7 @@ data file, and operational limits.
 
 | Field              | Type   | Required | Description                                      |
 |--------------------|--------|----------|--------------------------------------------------|
-| `test_type`        | string | yes      | Plugin identifier: `"PWD"` or `"BENCH"`          |
+| `test_type`        | string | yes      | Plugin identifier: `"PWD"`, `"BENCH"`, or `"ECHO"` |
 | `config_file`      | string | no       | Path to plugin-specific config file              |
 | `source_file`      | string | no       | Path to source data file (used by plugins)       |
 | `duration`         | int    | no       | Max run duration in seconds (0 = no limit)       |
@@ -134,6 +134,15 @@ each chunk, and includes a SHA-256 hash for verification.
 - **Exit conditions**: Returns `true` when the entire file has been chunked
 - **Checkpoint state**: `offset`, `processed`, `seq`, `chunk_size`, `file_size`,
   `total_chunks`, `transactions_per_second`
+
+### ECHO Plugin (`ECHO_plugin.cpp`)
+
+Echo/verification plugin. Generates sequential payloads using A-Z cycling with
+configurable payload size and total unit count.
+
+- **Config file**: `payload_size` (default: 64), `total_units` (default: 1000)
+- **Exit conditions**: Returns `true` when `total_units` work units have been generated
+- **Checkpoint state**: `seq`, `payload_size`, `total_units`
 
 ### Adding a New Test Type
 
@@ -437,7 +446,8 @@ uses the backup and logs a warning.
   (if present), initializes plugin, starts background threads, runs the TCP
   accept loop. On each accept, spawns a detached thread for `handle_client()`.
 - **Dispatcher thread**: Runs a loop checking `plugin_.exit_conditions()`,
-  `max_units_` completion count, and `duration` limits. Sets `running_ = false`
+  `max_units_` completion count, `duration` limits, and the `--max-time`
+  elapsed-time limit (measured from `start_time_`). Sets `running_ = false`
   when any condition is met. Sleeps 100ms between checks.
 - **Checkpoint thread**: Runs on a 60-second interval. Calls `plugin_.checkpoint()`
   to get plugin state, merges with tracker state, and saves via `CheckpointManager`.
@@ -452,7 +462,7 @@ uses the backup and logs a warning.
 ## 13. CLI Interface
 
 ```
-producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [--seed N] [--duration SECONDS] [--gateway IP] [--checkpoint-dir DIR] [--resume] [--test-type TYPE]
+producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [--seed N] [--duration SECONDS] [--max-time DUR] [--gateway IP] [--checkpoint-dir DIR] [--resume] [--test-type TYPE] [--transfer-siblings]
 ```
 
 | Flag               | Default            | Description                                      |
@@ -463,10 +473,12 @@ producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [-
 | `--permutation`    | `sequential`       | Job permutation mode (retained for compatibility) |
 | `--seed`           | 0                  | PRNG seed for `random` permutation               |
 | `--duration`       | 0                  | Run duration in seconds (0 = run until done)     |
+| `--max-time`       | 0                  | Max time before shutdown; value may end in `s`/`m`/`h` (e.g. `30s`, `5m`, `1h`; bare number = seconds; 0 = no limit) |
 | `--gateway`        | 192.168.1.1        | Default local gateway IPv4 address               |
 | `--checkpoint-dir` | platform default   | Directory for checkpoint state files             |
 | `--resume`         | false              | Resume from checkpoint if one exists             |
 | `--test-type`      | *(from config)*    | Test type identifier (overrides config file)     |
+| `--transfer-siblings` | false          | Transfer all sibling files in config directory to remote consumers |
 
 The default checkpoint directory is determined by `get_data_directory()`:
 - **Windows**: `%APPDATA%\Producer\`
@@ -572,6 +584,7 @@ For PWD test type, additionally prints:
 - [ ] Backup checkpoint file exists and is a valid prior state
 - [ ] Checkpoint includes `plugin_state` from `plugin_.checkpoint()`
 - [ ] `--resume` restores plugin state and continues from last completed seq
+- [ ] `--max-time DUR` shuts the Producer down after the given duration (supports `s`/`m`/`h` suffixes)
 - [ ] File transfer server accepts on `port + 1` and serves files correctly
 - [ ] File transfer responds with size `0` for not-found files
 - [ ] Socket recv timeout (10s) throws "Socket recv timeout" on accepted sockets

@@ -13,6 +13,8 @@ public:
     virtual std::string type() const = 0;
 
     virtual ResultMessage handle(const WorkUnitMessage& work) = 0;
+
+    virtual void configure(const std::string& config_path) {}
 };
 
 } // namespace pc

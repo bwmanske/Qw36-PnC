@@ -200,6 +200,16 @@ When idle threads are available, the Consumer requests more work:
   sends a new work request for the number of idle threads.
 - To avoid flooding, work requests are throttled: maximum one request per
   50ms per Consumer connection.
+- **Idle safety net**: the main loop also sends a work request whenever the
+  pool is fully idle (`active_count() == 0 && queue_empty()`), guarding
+  against the throttle dropping the idle-callback request after a burst.
+
+### Idle Timeout (`--timeout`)
+
+- The Consumer tracks the time of the last frame received from the Producer
+  (`last_comm_time_`, updated in the receiver loop).
+- If `--timeout SEC` is set and no communication has occurred for that many
+  seconds, the main loop shuts the Consumer down (exit code 0).
 
 ## 7. JSON Message Format — Heartbeat (Outbound, Consumer → Producer)
 
@@ -241,11 +251,14 @@ public:
     virtual ~IWorkUnitHandler() = default;
     virtual std::string type() const = 0;
     virtual ResultMessage handle(const WorkUnitMessage& work) = 0;
+    virtual void configure(const std::string& config_path) {}  // Default no-op
 };
 ```
 
-- `type()` — Returns the handler type string (e.g., `"PWD"`, `"BENCH"`).
+- `type()` — Returns the handler type string (e.g., `"PWD"`, `"BENCH"`, `"ECHO"`).
 - `handle(work)` — Processes a work unit and returns a `ResultMessage`.
+- `configure(config_path)` — Optional handler configuration (default no-op).
+  Called after handler instantiation if `--handler-config` is provided.
 
 ### Handler Selection
 
@@ -256,6 +269,7 @@ constructor instantiates the appropriate handler:
 |------------|------------------|-------------------------------------|
 | `PWD`      | `PWD_Handler`    | `include/consumer/PWD_Handler.h`    |
 | `BENCH`    | `BENCH_Handler`  | `include/consumer/BENCH_Handler.h`  |
+| `ECHO`     | `ECHO_Handler`   | `include/consumer/ECHO_Handler.h`   |
 
 If no handler is specified, work units are processed with a default fallback
 that returns `"failure"` with `"no handler registered"`.
@@ -284,6 +298,17 @@ Compares file chunks using base64 decode + SHA-256 verification.
 - Returns `"success"` with `match`, `offset`, `chunk_size`, `expected_hash`,
   `actual_hash`, and `duration_ms` in the result.
 
+### ECHO_Handler
+
+Verifies payload hash and supports configurable power-law distributed delay.
+
+- Reads `payload` and `hash` from `work.job`.
+- Computes SHA-256 of the payload, compares against `hash`.
+- Applies a configurable delay: `delay = max_delay * (1 - r^1.64)` where
+  `r ~ Uniform(0,1)`. Configured via `echo_config.json` with `max_delay_sec`.
+- `configure(config_path)` reads `echo_config.json` for `max_delay_sec`.
+- Returns `"success"` with `match`, `hash`, `delay_ms`, and `duration_ms` in the result.
+
 ## 9. Result Sink Architecture
 
 Results are optionally persisted through pluggable sinks implementing the
@@ -311,13 +336,19 @@ public:
 
 The default `IResultSink` implementation (`include/consumer/file_result_sink.h`).
 
-- Configured via `--result-file FILE`.
+- **Default behavior**: Created automatically when no `--result-file` is specified.
+  Default path: `%APPDATA%\Producer\results_<consumer_id>.jsonl` (Windows) or
+  `~/.local/share/producer/results_<consumer_id>.jsonl` (Linux).
+- When `--result-file FILE` is specified, uses the given path instead.
 - Opens the file in append mode (`std::ios::app`).
 - Writes one JSON line per result (JSON Lines format).
 - Each line includes the full result plus a `sink_stats` object with running
   totals: `total`, `successes`, `failures`.
 - Thread-safe via `std::mutex`.
-- `should_stop()` always returns `false`.
+- **Stopping criteria**: Constructor accepts `max_failures` and `max_duration_sec`
+  (both default to 0 = disabled). `should_stop()` returns `true` when
+  `failures_ >= max_failures_` or elapsed time >= `max_duration_sec_`.
+- Configured via `--max-failures N` and `--max-duration SEC` CLI flags.
 
 Example JSON line:
 
@@ -412,7 +443,7 @@ The Consumer uses a thread pool to process work units concurrently.
 ## 12. CLI Interface
 
 ```
-consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file-dir DIR] [--max-messages N] [--local] [--gateway IP] [--consumer-id ID] [--handler TYPE] [--result-file FILE]
+consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file-dir DIR] [--max-messages N] [--local] [--gateway IP] [--consumer-id ID] [--handler TYPE] [--handler-config FILE] [--result-file FILE] [--max-failures N] [--max-duration SEC] [--timeout SEC]
 ```
 
 | Flag           | Default            | Description                                      |
@@ -426,8 +457,12 @@ consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file
 | `--local`      | false              | Force localhost connection (127.0.0.1)           |
 | `--gateway`    | 192.168.1.1        | Default local gateway IPv4 address               |
 | `--consumer-id`| (auto-generated)   | Unique Consumer ID (default: `cons-<hostname>-<hash>`) |
-| `--handler`    | (none)             | Work unit handler type (`PWD`, `BENCH`)          |
-| `--result-file`| (none)             | Write results to JSON lines file                 |
+| `--handler`    | (none)             | Work unit handler type (`PWD`, `BENCH`, `ECHO`)  |
+| `--handler-config`| (none)          | Path to handler-specific config file             |
+| `--result-file`| (auto-generated)   | Write results to JSON lines file                 |
+| `--max-failures`| 0                 | Stop after N failure results (0 = no limit)      |
+| `--max-duration`| 0                 | Stop after N seconds (0 = no limit)              |
+| `--timeout`    | 0                  | Close after N seconds with no producer communication (0 = no limit) |
 
 ## 13. Platform Conditionals
 
@@ -457,7 +492,9 @@ The Consumer handles SIGINT (Ctrl+C) and SIGTERM:
 2. Main thread detects the flag in its polling loop (500ms interval).
 3. `running_` is set to `false`.
 4. Thread pool is shut down; worker threads finish current work and exit.
-5. Work queue is shut down, blocking the receiver thread.
+5. `drain_pending()` collects queued + active work units from the pool.
+6. For each pending unit, a `"failure"` result with `error: "consumer shutdown"` is sent.
+7. Work queue is shut down, blocking the receiver thread.
 6. Receiver and heartbeat threads are joined.
 7. Socket is closed, resources are released.
 8. Final statistics are printed to stdout.
@@ -520,6 +557,7 @@ Result sink:             file file=results.jsonl total=150 ok=148 fail=2
 - [ ] Duplicate `work_unit_id` messages are detected via LRU cache (3000 max)
 - [ ] Duplicate work units receive `"success"` with `"duplicate, already processed"`
 - [ ] `--max-messages N` stops processing after N received units
+- [ ] `--timeout SEC` shuts the Consumer down after N seconds without producer communication
 - [ ] `--local` flag connects to 127.0.0.1
 - [ ] `--handler PWD` instantiates `PWD_Handler`
 - [ ] `--handler BENCH` instantiates `BENCH_Handler`
