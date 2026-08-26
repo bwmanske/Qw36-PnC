@@ -47,14 +47,21 @@ void WorkTracker::mark_failed(const std::string& work_unit_id) {
 
 std::vector<WorkUnitEntry> WorkTracker::get_pending(int count) {
     std::lock_guard<std::mutex> lock(mtx_);
-    std::vector<WorkUnitEntry> result;
+    std::vector<WorkUnitEntry> pending;
     for (auto& [id, entry] : entries_) {
-        if (static_cast<int>(result.size()) >= count) break;
         if (entry.status == WorkUnitStatus::Pending) {
-            result.push_back(entry);
+            pending.push_back(entry);
         }
     }
-    return result;
+    // Dispatch in sequence order (FIFO) for deterministic, in-order work distribution.
+    std::sort(pending.begin(), pending.end(),
+              [](const WorkUnitEntry& a, const WorkUnitEntry& b) {
+                  return a.seq < b.seq;
+              });
+    if (static_cast<int>(pending.size()) > count) {
+        pending.resize(count);
+    }
+    return pending;
 }
 
 std::optional<WorkUnitEntry> WorkTracker::find(const std::string& work_unit_id) const {

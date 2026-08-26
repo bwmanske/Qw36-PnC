@@ -27,8 +27,22 @@
 
 ### Build & Test
 - [x] Windows build (MSVC): `producer.exe` + `consumer.exe`
-- [x] 110/110 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, socket)
+- [x] 111/111 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, socket)
 - [x] Test libraries: `producer_lib`, `consumer_lib` for test linking
+
+### Linux Build Verification (WSL2)
+- [x] Linux build verified on WSL2 Ubuntu (CMake 4.2.3, g++ 15.2.0): configure + build succeed with 0 errors; all 12 test executables + `producer` + `consumer` produced
+- [x] Cross-platform fixes (all guarded so Windows behavior is unchanged):
+  - `CMakeLists.txt` — `ENABLE_CNG` now platform-conditional (ON on Windows, OFF elsewhere); link the `archive_static` target instead of the hardcoded MSVC `Release/archive.lib` path
+  - `include/common/util.h` — added `<cstdint>`/`<cstddef>` (`uint8_t`/`size_t` on GCC)
+  - `include/common/queue.h` — added `<stdexcept>`
+  - `src/common/socket.cpp` — fixed 3 string-concat errors in the POSIX branch; `close()` now calls `shutdown(SHUT_RDWR)` before `close()` on POSIX (a bare `close()` does not unblock a blocked `accept()`); `bind()` sets `SO_REUSEADDR` on POSIX (allows re-binding a port whose prior connection is in FIN-WAIT/TIME_WAIT)
+  - `src/consumer/consumer.cpp` — `<arpa/inet.h>`/`<unistd.h>` for POSIX (`htonl`/`ntohl`/`gethostname`)
+  - `src/producer/producer.cpp` — `<arpa/inet.h>` for POSIX; `run()` now creates/binds the listening sockets **before** starting worker threads (fixes a race where `file_transfer_loop` accepted on an unbound socket → busy-loop flood); `dispatcher_loop()` closes the server socket after the loop (covers every stop path)
+  - `src/producer/work_tracker.cpp` — `get_pending()` now returns entries in `seq` order (FIFO) instead of `unordered_map` hash order
+  - `tests/test_checkpoint.cpp` — `Paths` test uses a writable temp dir instead of `/test/dir` (root-level, permission-denied on Linux)
+- [x] 11 of 12 test suites pass on Linux (104 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
+- [ ] `test_integration` hangs when run after other test binaries — see **Known Issues** (on hold)
 
 ### Pluggable Handler Architecture
 - [x] Renamed `permutations.*` → `PWD_NextUnit.*` (class: `Permutations` → `PWD_NextUnit`)
@@ -74,7 +88,7 @@
 
 ### Medium Priority
 - [x] UDP transport integration in producer/consumer logic
-- [x] End-to-end integration test (spawn producer + consumer, verify full cycle) — `Integration.EndToEnd_ECHO_FullCycle` + `Integration.EndToEnd_TimeoutShutdown`
+- [x] End-to-end integration test (spawn producer + consumer, verify full cycle) — `Integration.EndToEnd_ECHO_FullCycle` + `Integration.EndToEnd_TimeoutShutdown` + `Integration.EndToEnd_ECHO_UDP_FullCycle` (UDP transport)
 - [x] Stopping criteria in `IResultSink` (max failures, time limit, etc.)
 - [x] Additional handler types (XXX_NextUnit + XXX_Handler pairs)
 - [x] Producer `--max-time DUR` and consumer `--timeout SEC` shutdown options (`parse_duration` in `common/util`)
@@ -82,10 +96,48 @@
 - [ ] `PWD_NextUnit` checkpoint state serialization for resume
 
 ### Low Priority
-- [ ] Linux build verification
+- [x] Linux build verification — build + 11/12 suites pass on WSL2; one known issue (`test_integration` suite-context hang) documented under **Known Issues** (on hold)
 - [ ] Performance benchmarking
 - [ ] Dashboard / telemetry endpoint
 - [ ] WebSocket or HTTP/2 transport option
+
+## Known Issues
+
+### [ON HOLD] `test_integration` hangs when run after other test binaries (Linux)
+
+**Status:** On hold — documented 2026-08-23 during Linux build verification. Root cause not yet identified. Windows unaffected (111/111 passing).
+
+**Symptom**
+- `test_integration` passes 100% when run **in isolation** (verified repeatedly, with and without `stdbuf`).
+- When run **after other test binaries** (the normal full-suite sequence), it hangs 100% at `Integration.EndToEnd_ECHO_FullCycle` (5th of 7 tests) and is killed by the runner's 60 s timeout (exit 124).
+- The other 5 tests in the binary pass; the hang is specific to the fork+exec end-to-end test.
+
+**What the test does** (`tests/test_integration.cpp`, `Integration.EndToEnd_ECHO_FullCycle`)
+1. Forks the real `producer` (`--port 19876 --max-time 30s`, ECHO plugin, 5 units).
+2. Sleeps 1 s, forks the real `consumer` (`--max-messages 5 --timeout 30`).
+3. Calls raw `waitpid(pid, &status, 0)` on both — **no timeout**. If either child fails to exit, the test blocks forever.
+
+**Facts established during diagnosis**
+1. Running the *exact* producer/consumer commands manually (same port 19876, same flags) works perfectly: producer exit 0, consumer exit 0, 5/5 results with hash match, checkpoint written. The producer/consumer logic is correct.
+2. No shared state from the preceding tests: after running `test_message`, `test_queue`, `test_work_tracker`, `test_checkpoint`, there are **no** leftover `/tmp` files, **no** ports in TIME_WAIT, and **no** orphan processes.
+3. Yet running those 4 binaries before `test_integration` reproduces the hang 100%; running `test_integration` alone passes 100%.
+4. The consumer's connect retry is bounded (30 attempts × 5 s, then `exit(2)`) — it cannot hang forever on connect.
+5. The producer's `dispatcher_loop` checks `--max-time` every 100 ms — even if the plugin never exhausted, the producer should exit within ~30 s.
+6. `SO_REUSEADDR` was added to `Socket::bind()` (POSIX) during this investigation: back-to-back isolated runs now pass 3/3 (a second run previously could fail to re-bind over the first run's FIN-WAIT/TIME_WAIT). This fixed the isolated re-bind case but **not** the suite-context hang.
+7. The hang is not `stdbuf`-related (isolated runs with `stdbuf -oL -eL` pass).
+
+**Suspects / next diagnostic steps**
+1. **Attach to the hung children:** run the suite sequence, and while `EndToEnd_ECHO_FullCycle` is hanging, inspect the forked producer/consumer: `/proc/<pid>/wchan`, `/proc/<pid>/stack`, `ls -l /proc/<pid>/fd`, and `strace -p <pid>` to see exactly where each is blocked.
+2. **Bisect the preceding tests:** run `test_integration` after each single preceding test (message, queue, work_tracker, checkpoint) to find which one triggers the hang.
+3. **Fork+exec context:** the prime suspect is something about forking from the gtest process after other binaries have run (kernel/TCP stack state, timing/load). Note the in-binary state is identical in both cases (the first 4 in-binary tests run before the fork either way), so the difference is purely "other processes ran first".
+4. **Port-specific kernel state:** try a different fixed port (e.g. 19890) to rule out port-specific state.
+5. **Test robustness (independent of root cause):** `EndToEnd_ECHO_FullCycle` uses raw `waitpid()` with no timeout, whereas `EndToEnd_TimeoutShutdown` uses `wait_bounded()` (30 s timeout + SIGKILL). Switching the former to `wait_bounded()` would turn the hang into a clean, diagnostic test failure and stop one flaky run from stalling the whole suite.
+
+**Workaround for now:** run `test_integration` in isolation (it passes reliably):
+```bash
+build/tests/test_integration                 # Linux
+build\tests\Release\test_integration.exe     # Windows
+```
 
 ## Open Questions
 

@@ -180,8 +180,10 @@ TEST(CheckpointManager, NotExists) {
 }
 
 TEST(CheckpointManager, Paths) {
-    CheckpointManager mgr("/test/dir");
-    EXPECT_EQ(mgr.directory(), "/test/dir");
-    EXPECT_EQ(mgr.primary_path(), "/test/dir/state.json");
-    EXPECT_EQ(mgr.backup_path(), "/test/dir/state.backup.json");
+    std::string dir = test_dir();
+    CheckpointManager mgr(dir);
+    EXPECT_EQ(mgr.directory(), dir);
+    EXPECT_EQ(mgr.primary_path(), dir + "/state.json");
+    EXPECT_EQ(mgr.backup_path(), dir + "/state.backup.json");
+    fs::remove_all(dir);
 }

@@ -597,3 +597,216 @@ TEST(Integration, EndToEnd_TimeoutShutdown) {
 
     fs::remove_all(tmpdir);
 }
+
+// ── End-to-end over UDP: spawn producer + consumer processes ──
+
+TEST(Integration, EndToEnd_ECHO_UDP_FullCycle) {
+    // ── 1. Create temp directory and config files ──
+    std::string tmpdir;
+#ifdef _WIN32
+    const char* t = std::getenv("TEMP");
+    tmpdir = (t ? t : "C:\\Temp") + std::string("\\pc_e2e_udp_") + std::to_string(GetTickCount64());
+#else
+    tmpdir = "/tmp/pc_e2e_udp_" + std::to_string(getpid());
+#endif
+    fs::create_directories(tmpdir);
+
+    // ECHO plugin config: 5 work units, small payload
+    std::string echo_config_path = tmpdir + "/echo_config.json";
+    {
+        std::ofstream cf(echo_config_path);
+        cf << R"({"payload_size":16,"total_units":5})";
+    }
+
+    // Main producer config (job file) — config_file must be absolute
+    std::string job_config_path = tmpdir + "/job_config.json";
+    {
+        nlohmann::json cfg;
+        cfg["test_type"] = "ECHO";
+        cfg["config_file"] = echo_config_path;
+        cfg["max_units"] = 5;
+        cfg["max_idle_seconds"] = 30;
+        std::ofstream jf(job_config_path);
+        jf << cfg.dump();
+    }
+
+    // Directories
+    std::string ckpt_dir = tmpdir + "/checkpoints";
+    std::string file_dir = tmpdir + "/files";
+    fs::create_directories(ckpt_dir);
+    fs::create_directories(file_dir);
+
+    std::string result_file = tmpdir + "/results.jsonl";
+
+    // ── 2. Find executables ──
+    std::string producer_exe = find_executable("producer");
+    std::string consumer_exe = find_executable("consumer");
+
+    ASSERT_TRUE(fs::exists(producer_exe)) << "Producer not found at: " << producer_exe;
+    ASSERT_TRUE(fs::exists(consumer_exe)) << "Consumer not found at: " << consumer_exe;
+
+    uint16_t port = 19878;
+
+#ifdef _WIN32
+    // ── Windows: CreateProcess ──
+
+    // Launch producer (UDP)
+    std::string prod_cmd = "\"" + producer_exe + "\" --file \"" + job_config_path +
+        "\" --port " + std::to_string(port) +
+        " --transport udp" +
+        " --checkpoint-dir \"" + ckpt_dir + "\"" +
+        " --max-time 30s";
+
+    STARTUPINFOA si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi_prod = {};
+    EXPECT_TRUE(CreateProcessA(nullptr, const_cast<char*>(prod_cmd.c_str()),
+                               nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW,
+                               nullptr, nullptr, &si, &pi_prod))
+        << "Failed to launch producer";
+    CloseHandle(pi_prod.hThread);
+
+    // Give producer time to bind and listen
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    // Launch consumer (UDP)
+    std::string cons_cmd = "\"" + consumer_exe + "\" --host 127.0.0.1" +
+        " --port " + std::to_string(port) +
+        " --transport udp" +
+        " --threads 2" +
+        " --handler ECHO" +
+        " --file-dir \"" + file_dir + "\"" +
+        " --max-messages 5" +
+        " --result-file \"" + result_file + "\"" +
+        " --local" +
+        " --timeout 30";
+
+    STARTUPINFOA si2 = {};
+    si2.cb = sizeof(si2);
+    PROCESS_INFORMATION pi_cons = {};
+    EXPECT_TRUE(CreateProcessA(nullptr, const_cast<char*>(cons_cmd.c_str()),
+                               nullptr, nullptr, FALSE,
+                               CREATE_NO_WINDOW,
+                               nullptr, nullptr, &si2, &pi_cons))
+        << "Failed to launch consumer";
+    CloseHandle(pi_cons.hThread);
+
+    // Wait for both (max 60s each), killing on timeout to avoid orphans
+    DWORD prod_wait = WaitForSingleObject(pi_prod.hProcess, 60000);
+    if (prod_wait != WAIT_OBJECT_0) TerminateProcess(pi_prod.hProcess, 1);
+    DWORD cons_wait = WaitForSingleObject(pi_cons.hProcess, 60000);
+    if (cons_wait != WAIT_OBJECT_0) TerminateProcess(pi_cons.hProcess, 1);
+    EXPECT_EQ(prod_wait, WAIT_OBJECT_0) << "Producer did not exit within 60s";
+    EXPECT_EQ(cons_wait, WAIT_OBJECT_0) << "Consumer did not exit within 60s";
+
+    DWORD exit_code;
+    GetExitCodeProcess(pi_prod.hProcess, &exit_code);
+    EXPECT_EQ(exit_code, 0u) << "Producer exit code: " << exit_code;
+    GetExitCodeProcess(pi_cons.hProcess, &exit_code);
+    EXPECT_EQ(exit_code, 0u) << "Consumer exit code: " << exit_code;
+
+    CloseHandle(pi_prod.hProcess);
+    CloseHandle(pi_cons.hProcess);
+
+#else
+    // ── POSIX: fork + exec ──
+
+    pid_t prod_pid = fork();
+    if (prod_pid == 0) {
+        execl(producer_exe.c_str(), "producer",
+              "--file", job_config_path.c_str(),
+              "--port", std::to_string(port).c_str(),
+              "--transport", "udp",
+              "--checkpoint-dir", ckpt_dir.c_str(),
+              "--max-time", "30s",
+              nullptr);
+        _exit(127);
+    }
+    ASSERT_GT(prod_pid, 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    pid_t cons_pid = fork();
+    if (cons_pid == 0) {
+        execl(consumer_exe.c_str(), "consumer",
+              "--host", "127.0.0.1",
+              "--port", std::to_string(port).c_str(),
+              "--transport", "udp",
+              "--threads", "2",
+              "--handler", "ECHO",
+              "--file-dir", file_dir.c_str(),
+              "--max-messages", "5",
+              "--result-file", result_file.c_str(),
+              "--local",
+              "--timeout", "30",
+              nullptr);
+        _exit(127);
+    }
+    ASSERT_GT(cons_pid, 0);
+
+    int status_prod, status_cons;
+    bool prod_exited = wait_bounded(prod_pid, status_prod, 60000);
+    bool cons_exited = wait_bounded(cons_pid, status_cons, 60000);
+    EXPECT_TRUE(prod_exited) << "Producer did not exit within 60s";
+    EXPECT_TRUE(cons_exited) << "Consumer did not exit within 60s";
+    if (prod_exited) {
+        EXPECT_TRUE(WIFEXITED(status_prod) && WEXITSTATUS(status_prod) == 0)
+            << "Producer exited abnormally";
+    }
+    if (cons_exited) {
+        EXPECT_TRUE(WIFEXITED(status_cons) && WEXITSTATUS(status_cons) == 0)
+            << "Consumer exited abnormally";
+    }
+#endif
+
+    // ── 3. Verify results ──
+    ASSERT_TRUE(fs::exists(result_file)) << "Result file not created at: " << result_file;
+
+    std::string result_content = read_file_contents(result_file);
+    ASSERT_FALSE(result_content.empty()) << "Result file is empty";
+
+    int line_count = 0;
+    int success_count = 0;
+    int match_count = 0;
+    std::istringstream ss(result_content);
+    std::string line;
+    while (std::getline(ss, line)) {
+        size_t end = line.find_last_not_of(" \t\r\n");
+        if (end == std::string::npos) continue;
+        line = line.substr(0, end + 1);
+        if (line.empty()) continue;
+
+        line_count++;
+        try {
+            nlohmann::json j = nlohmann::json::parse(line);
+            if (j.value("status", "") == "success") {
+                success_count++;
+            }
+            if (j.contains("result") && j["result"].contains("match")) {
+                if (j["result"]["match"].get<bool>()) {
+                    match_count++;
+                }
+            }
+        } catch (...) {}
+    }
+
+    EXPECT_GE(line_count, 5) << "Expected >= 5 result lines, got " << line_count;
+    EXPECT_GE(success_count, 5) << "Expected >= 5 successes, got " << success_count;
+    EXPECT_GE(match_count, 5) << "Expected >= 5 hash matches over UDP, got " << match_count;
+
+    // ── 4. Verify checkpoint ──
+    bool checkpoint_exists = false;
+    if (fs::exists(ckpt_dir)) {
+        for (const auto& entry : fs::directory_iterator(ckpt_dir)) {
+            if (entry.path().extension() == ".json") {
+                checkpoint_exists = true;
+                break;
+            }
+        }
+    }
+    EXPECT_TRUE(checkpoint_exists) << "No checkpoint file in " << ckpt_dir;
+
+    // ── 5. Cleanup ──
+    fs::remove_all(tmpdir);
+}

@@ -22,6 +22,10 @@
 #include <thread>
 #include <algorithm>
 #include <cstring>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <unistd.h>
+#endif
 
 namespace pc {
 namespace fs = std::filesystem;

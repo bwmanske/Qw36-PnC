@@ -30,7 +30,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_queue` | `test_queue.exe` | 8 | `common` |
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 6 | `common` |
-| `test_integration` | `test_integration.exe` | 6 | `producer_lib`, `consumer_lib` |
+| `test_integration` | `test_integration.exe` | 7 | `producer_lib`, `consumer_lib` |
 | `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 20 | `producer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
 | `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
@@ -38,7 +38,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_thread_pool` | `test_thread_pool.exe` | 7 | `consumer_lib` |
 | `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
 | `test_socket` | `test_socket.exe` | 7 | `common` |
-| **Total** | | **110** | |
+| **Total** | | **111** | |
 
 ---
 
@@ -142,7 +142,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 
 ---
 
-## test_integration (6 tests)
+## test_integration (7 tests)
 
 ### Integration
 
@@ -154,8 +154,11 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `MessageSerializationAllTypes` | All three message types (`WorkUnitMessage`, `ResultMessage`, `WorkRequestMessage`) serialize and deserialize correctly with realistic payloads |
 | `EndToEnd_ECHO_FullCycle` | Spawns the real `producer.exe` + `consumer.exe` processes (ECHO test type, 5 units): verifies both exit 0, the result file has ≥5 success lines with a hash `match: true`, and a checkpoint file was written |
 | `EndToEnd_TimeoutShutdown` | Spawns producer (`--max-time 2s`, unlimited units) + consumer (`--timeout 5`): verifies the producer log contains `Max time reached` and the consumer log contains `Idle timeout`, and both exit 0 |
+| `EndToEnd_ECHO_UDP_FullCycle` | Same as `EndToEnd_ECHO_FullCycle` but both processes use `--transport udp`: verifies 5 ECHO work units cross the UDP control channel with ≥5 success lines and ≥5 hash `match: true`, and a checkpoint file was written |
 
-The two `EndToEnd_*` tests require the main executables to be built and use fixed loopback ports (19876/19877); each cleans up its temp directory on exit.
+The three `EndToEnd_*` tests require the main executables to be built and use fixed loopback ports (19876/19877/19878); each cleans up its temp directory on exit.
+
+> **Known issue (Linux, on hold):** `EndToEnd_ECHO_FullCycle` hangs when `test_integration` is run *after* other test binaries (full-suite sequence), though it passes reliably in isolation. It uses a raw `waitpid()` with no timeout, so a non-exiting child blocks the whole suite. Run `test_integration` in isolation until resolved. Full details: `docs/PROGRESS.md` → **Known Issues**.
 
 ---
 
@@ -337,7 +340,7 @@ The two `EndToEnd_*` tests require the main executables to be built and use fixe
 The following require running the actual executables or network connectivity:
 
 - File transfer protocol over `port + 1`
-- UDP `udp_loop` and version handshake over UDP (UDP framing itself is covered by `test_socket`)
+- UDP multi-consumer scenarios and UDP heartbeat keepalive (single-consumer UDP e2e — `udp_loop`, version handshake, work requests, and results over UDP — is covered by `EndToEnd_ECHO_UDP_FullCycle`; UDP framing by `test_socket`)
 - Signal handling and graceful shutdown (SIGINT/SIGTERM paths)
 - `PWD_Handler` processing
 - `BENCH_Handler` processing

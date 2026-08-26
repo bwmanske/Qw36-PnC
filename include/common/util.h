@@ -2,6 +2,8 @@
 #define PC_UTIL_H
 
 #include <string>
+#include <cstdint>
+#include <cstddef>
 
 namespace pc {
 

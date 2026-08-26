@@ -14,6 +14,9 @@
 #include <sstream>
 #include <filesystem>
 #include <cstring>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#endif
 
 namespace pc {
 namespace fs = std::filesystem;
@@ -39,21 +42,9 @@ void Producer::run() {
 
     init_plugin();
 
-    running_ = true;
-    checkpoint_running_ = true;
-    file_transfer_running_ = true;
-    monitor_running_ = true;
-    udp_running_ = (config_.transport == Transport::UDP);
-    start_time_ = std::chrono::steady_clock::now();
-
-    checkpoint_thread_ = std::thread(&Producer::checkpoint_loop, this);
-    file_transfer_thread_ = std::thread(&Producer::file_transfer_loop, this);
-    dispatcher_thread_ = std::thread(&Producer::dispatcher_loop, this);
-    monitor_thread_ = std::thread(&Producer::monitor_connections, this);
-    if (udp_running_) {
-        udp_thread_ = std::thread(&Producer::udp_loop, this);
-    }
-
+    // Create and bind the listening sockets BEFORE starting the worker
+    // threads that call accept() on them, to avoid a race where a thread
+    // accepts on an uninitialized socket and busy-loops on the error.
     server_socket_ = Socket(config_.transport);
     server_socket_.bind("0.0.0.0", config_.port);
 
@@ -72,6 +63,21 @@ void Producer::run() {
     } else {
         server_socket_.set_recv_timeout(5000);
         std::cout << "[producer] Listening on 0.0.0.0:" << config_.port << " (UDP)\n";
+    }
+
+    running_ = true;
+    checkpoint_running_ = true;
+    file_transfer_running_ = true;
+    monitor_running_ = true;
+    udp_running_ = (config_.transport == Transport::UDP);
+    start_time_ = std::chrono::steady_clock::now();
+
+    checkpoint_thread_ = std::thread(&Producer::checkpoint_loop, this);
+    file_transfer_thread_ = std::thread(&Producer::file_transfer_loop, this);
+    dispatcher_thread_ = std::thread(&Producer::dispatcher_loop, this);
+    monitor_thread_ = std::thread(&Producer::monitor_connections, this);
+    if (udp_running_) {
+        udp_thread_ = std::thread(&Producer::udp_loop, this);
     }
 
     if (config_.transport == Transport::TCP) {
@@ -241,7 +247,6 @@ void Producer::dispatcher_loop() {
         if (plugin_.exit_conditions && plugin_.exit_conditions()) {
             std::cout << "[producer] Plugin exit conditions met, shutting down\n";
             running_ = false;
-            server_socket_.close();
             break;
         }
 
@@ -251,7 +256,6 @@ void Producer::dispatcher_loop() {
             if (elapsed >= config_.max_time_sec) {
                 std::cout << "[producer] Max time reached (" << config_.max_time_sec << "s), shutting down\n";
                 running_ = false;
-                server_socket_.close();
                 break;
             }
         }
@@ -259,12 +263,14 @@ void Producer::dispatcher_loop() {
         if (max_units_ > 0 && tracker_.completed_count() >= static_cast<int64_t>(max_units_)) {
             std::cout << "[producer] Max units reached (" << max_units_ << "), shutting down\n";
             running_ = false;
-            server_socket_.close();
             break;
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    // Close the listening socket so a blocked accept() in the main thread returns,
+    // regardless of which stop condition triggered the exit.
+    server_socket_.close();
 }
 
 void Producer::handle_client(Socket client_socket) {

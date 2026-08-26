@@ -51,7 +51,7 @@ Socket::Socket(Transport transport)
     impl_->sock = ::socket(AF_INET,
         transport == Transport::TCP ? SOCK_STREAM : SOCK_DGRAM, 0);
     if (impl_->sock < 0)
-        throw std::runtime_error("socket creation failed: " + std::strerror(errno));
+        throw std::runtime_error(std::string("socket creation failed: ") + std::strerror(errno));
 #endif
     impl_->open = true;
 }
@@ -81,12 +81,19 @@ void Socket::bind(const std::string& address, uint16_t port) {
     if (inet_pton(AF_INET, address.c_str(), &addr.sin_addr) != 1)
         throw std::runtime_error("Invalid address: " + address);
 
+#ifndef _WIN32
+    // Allow re-binding a port whose prior connection is still in
+    // TIME_WAIT/FIN-WAIT (e.g. back-to-back test runs on the same port).
+    int opt = 1;
+    ::setsockopt(impl_->sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
+
 #ifdef _WIN32
     if (::bind(impl_->sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR)
         throw std::runtime_error("bind failed: " + std::to_string(WSAGetLastError()));
 #else
     if (::bind(impl_->sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-        throw std::runtime_error("bind failed: " + std::strerror(errno));
+        throw std::runtime_error(std::string("bind failed: ") + std::strerror(errno));
 #endif
 }
 
@@ -137,7 +144,7 @@ void Socket::connect(const std::string& address, uint16_t port) {
         throw std::runtime_error("connect failed: " + std::to_string(WSAGetLastError()));
 #else
     if (::connect(impl_->sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-        throw std::runtime_error("connect failed: " + std::strerror(errno));
+        throw std::runtime_error(std::string("connect failed: ") + std::strerror(errno));
 #endif
     impl_->open = true;
 }
@@ -228,7 +235,12 @@ void Socket::close() {
 #ifdef _WIN32
         if (impl_->valid()) ::closesocket(impl_->sock);
 #else
-        if (impl_->valid()) ::close(impl_->sock);
+        if (impl_->valid()) {
+            // shutdown() reliably unblocks a blocked accept()/recv(); close() alone
+            // does not on Linux.
+            ::shutdown(impl_->sock, SHUT_RDWR);
+            ::close(impl_->sock);
+        }
 #endif
         impl_->open = false;
     }

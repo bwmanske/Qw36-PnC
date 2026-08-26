@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <chrono>
 #include <optional>
+#include <stdexcept>
 
 namespace pc {
 
