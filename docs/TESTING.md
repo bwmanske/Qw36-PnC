@@ -158,7 +158,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 
 The three `EndToEnd_*` tests require the main executables to be built and use fixed loopback ports (19876/19877/19878); each cleans up its temp directory on exit.
 
-> **Known issue (Linux, on hold):** `EndToEnd_ECHO_FullCycle` hangs when `test_integration` is run *after* other test binaries (full-suite sequence), though it passes reliably in isolation. It uses a raw `waitpid()` with no timeout, so a non-exiting child blocks the whole suite. Run `test_integration` in isolation until resolved. Full details: `docs/PROGRESS.md` → **Known Issues**.
+> **Note (Linux):** A prior suite-context hang in `EndToEnd_ECHO_FullCycle` was root-caused to an unbounded directory-walk loop in the `find_executable()` test helper (not in `waitpid` or the forked processes) and is now fixed. `test_integration` passes in the full-suite sequence and in isolation. Full details: `docs/PROGRESS.md` → **Known Issues**.
 
 ---
 

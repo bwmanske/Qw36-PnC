@@ -170,28 +170,38 @@ TEST(Integration, MessageSerializationAllTypes) {
 #endif
 
 static std::string find_executable(const std::string& name) {
+    // Check `dir` and common build-output subdirectories for the executable.
+    // Covers Windows multi-config (build/Release, build/Debug) and Linux
+    // single-config (build) layouts, plus the directory itself.
     auto check_dir = [&name](const fs::path& dir) -> std::string {
-        fs::path candidate = dir / name;
+        fs::path candidates[] = {
+            dir,
+            dir / "build" / "Release",
+            dir / "build" / "Debug",
+            dir / "build",
+        };
+        for (const auto& c : candidates) {
+            fs::path full = c / name;
 #ifdef _WIN32
-        if (candidate.extension().empty()) {
-            candidate += ".exe";
-        }
+            if (full.extension().empty()) full += ".exe";
 #endif
-        if (fs::exists(candidate)) return candidate.string();
+            if (fs::exists(full)) return full.string();
+        }
         return "";
     };
 
-    // Search upward from CWD, checking both the directory itself and
-    // its build/Release subdirectory (test binary at build/tests/Release/,
-    // executables at build/Release/).
+    // Search upward from CWD. The loop is bounded two ways so it can never
+    // spin: (1) break when parent_path() makes no progress — some libstdc++
+    // builds (e.g. glibc 2.43 / GCC 15 on Ubuntu 26.04) return the root "/"
+    // as its own parent, so has_parent_path() alone does not terminate — and
+    // (2) a hard iteration cap as a safety net.
     fs::path dir = fs::current_path();
-    while (true) {
+    for (int iterations = 0; iterations < 1000; ++iterations) {
         std::string found = check_dir(dir);
         if (!found.empty()) return found;
-        found = check_dir(dir / "build" / "Release");
-        if (!found.empty()) return found;
-        if (!dir.has_parent_path()) break;
-        dir = dir.parent_path();
+        fs::path parent = dir.parent_path();
+        if (parent == dir || !dir.has_parent_path()) break;
+        dir = parent;
     }
     return name;
 }

@@ -41,8 +41,8 @@
   - `src/producer/producer.cpp` — `<arpa/inet.h>` for POSIX; `run()` now creates/binds the listening sockets **before** starting worker threads (fixes a race where `file_transfer_loop` accepted on an unbound socket → busy-loop flood); `dispatcher_loop()` closes the server socket after the loop (covers every stop path)
   - `src/producer/work_tracker.cpp` — `get_pending()` now returns entries in `seq` order (FIFO) instead of `unordered_map` hash order
   - `tests/test_checkpoint.cpp` — `Paths` test uses a writable temp dir instead of `/test/dir` (root-level, permission-denied on Linux)
-- [x] 11 of 12 test suites pass on Linux (104 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
-- [ ] `test_integration` hangs when run after other test binaries — see **Known Issues** (on hold)
+- [x] All 12 test suites pass on Linux (111 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
+- [x] `test_integration` suite-context hang **fixed** — `find_executable` had an unbounded directory-walk loop (root cause + fix in **Known Issues**)
 
 ### Pluggable Handler Architecture
 - [x] Renamed `permutations.*` → `PWD_NextUnit.*` (class: `Permutations` → `PWD_NextUnit`)
@@ -96,48 +96,45 @@
 - [ ] `PWD_NextUnit` checkpoint state serialization for resume
 
 ### Low Priority
-- [x] Linux build verification — build + 11/12 suites pass on WSL2; one known issue (`test_integration` suite-context hang) documented under **Known Issues** (on hold)
+- [x] Linux build verification — build + **12/12 suites pass** on WSL2 (the `test_integration` suite-context hang was root-caused and fixed; see **Known Issues**)
 - [ ] Performance benchmarking
 - [ ] Dashboard / telemetry endpoint
 - [ ] WebSocket or HTTP/2 transport option
 
 ## Known Issues
 
-### [ON HOLD] `test_integration` hangs when run after other test binaries (Linux)
+### [RESOLVED 2026-08-27] `test_integration` hangs when run after other test binaries (Linux)
 
-**Status:** On hold — documented 2026-08-23 during Linux build verification. Root cause not yet identified. Windows unaffected (111/111 passing).
+**Status:** Fixed. Root cause identified and corrected in `tests/test_integration.cpp::find_executable`. Verified: full suite (4 preceding binaries + `test_integration`) passes 7/7 on WSL2, and Windows 12/12 suites still pass.
 
-**Symptom**
-- `test_integration` passes 100% when run **in isolation** (verified repeatedly, with and without `stdbuf`).
-- When run **after other test binaries** (the normal full-suite sequence), it hangs 100% at `Integration.EndToEnd_ECHO_FullCycle` (5th of 7 tests) and is killed by the runner's 60 s timeout (exit 124).
-- The other 5 tests in the binary pass; the hang is specific to the fork+exec end-to-end test.
+**Symptom (original)**
+- `test_integration` hung 100% at `Integration.EndToEnd_ECHO_FullCycle` (5th of 7 tests) when run after the other test binaries, killed by the runner's 60 s timeout (exit 124). The other 5 tests passed.
 
-**What the test does** (`tests/test_integration.cpp`, `Integration.EndToEnd_ECHO_FullCycle`)
-1. Forks the real `producer` (`--port 19876 --max-time 30s`, ECHO plugin, 5 units).
-2. Sleeps 1 s, forks the real `consumer` (`--max-messages 5 --timeout 30`).
-3. Calls raw `waitpid(pid, &status, 0)` on both — **no timeout**. If either child fails to exit, the test blocks forever.
+**Root cause**
+The hang was **not** in the forked producer/consumer or in `waitpid`. The test process itself spun at ~100% CPU (1 thread, no children, only 3 fds open, ~8 voluntary context switches) in a tight **userspace** loop, *before* forking. The culprit was the `find_executable()` helper's directory walk:
 
-**Facts established during diagnosis**
-1. Running the *exact* producer/consumer commands manually (same port 19876, same flags) works perfectly: producer exit 0, consumer exit 0, 5/5 results with hash match, checkpoint written. The producer/consumer logic is correct.
-2. No shared state from the preceding tests: after running `test_message`, `test_queue`, `test_work_tracker`, `test_checkpoint`, there are **no** leftover `/tmp` files, **no** ports in TIME_WAIT, and **no** orphan processes.
-3. Yet running those 4 binaries before `test_integration` reproduces the hang 100%; running `test_integration` alone passes 100%.
-4. The consumer's connect retry is bounded (30 attempts × 5 s, then `exit(2)`) — it cannot hang forever on connect.
-5. The producer's `dispatcher_loop` checks `--max-time` every 100 ms — even if the plugin never exhausted, the producer should exit within ~30 s.
-6. `SO_REUSEADDR` was added to `Socket::bind()` (POSIX) during this investigation: back-to-back isolated runs now pass 3/3 (a second run previously could fail to re-bind over the first run's FIN-WAIT/TIME_WAIT). This fixed the isolated re-bind case but **not** the suite-context hang.
-7. The hang is not `stdbuf`-related (isolated runs with `stdbuf -oL -eL` pass).
-
-**Suspects / next diagnostic steps**
-1. **Attach to the hung children:** run the suite sequence, and while `EndToEnd_ECHO_FullCycle` is hanging, inspect the forked producer/consumer: `/proc/<pid>/wchan`, `/proc/<pid>/stack`, `ls -l /proc/<pid>/fd`, and `strace -p <pid>` to see exactly where each is blocked.
-2. **Bisect the preceding tests:** run `test_integration` after each single preceding test (message, queue, work_tracker, checkpoint) to find which one triggers the hang.
-3. **Fork+exec context:** the prime suspect is something about forking from the gtest process after other binaries have run (kernel/TCP stack state, timing/load). Note the in-binary state is identical in both cases (the first 4 in-binary tests run before the fork either way), so the difference is purely "other processes ran first".
-4. **Port-specific kernel state:** try a different fixed port (e.g. 19890) to rule out port-specific state.
-5. **Test robustness (independent of root cause):** `EndToEnd_ECHO_FullCycle` uses raw `waitpid()` with no timeout, whereas `EndToEnd_TimeoutShutdown` uses `wait_bounded()` (30 s timeout + SIGKILL). Switching the former to `wait_bounded()` would turn the hang into a clean, diagnostic test failure and stop one flaky run from stalling the whole suite.
-
-**Workaround for now:** run `test_integration` in isolation (it passes reliably):
-```bash
-build/tests/test_integration                 # Linux
-build\tests\Release\test_integration.exe     # Windows
+```cpp
+fs::path dir = fs::current_path();
+while (true) {
+    ...
+    if (!dir.has_parent_path()) break;
+    dir = dir.parent_path();
+}
 ```
+
+Two defects combined:
+1. **Unbounded loop on this toolchain.** On the WSL2 toolchain (Ubuntu 26.04, g++ 15.2.0, glibc 2.43), `std::filesystem::path::parent_path()` of the root `/` returns `/` and `has_parent_path()` of `/` returns `true`. So once the walk reached the root, `dir` never changed and the `while(true)` loop spun forever. (Reproduced in isolation with a minimal `parent_path()`/`has_parent_path()` walk: 100,000+ iterations at `dir="/" has_parent=1`.)
+2. **Search path missed the Linux build layout.** The old code only checked `dir/producer` and `dir/build/Release/producer`. The Linux single-config build places the executables at `dir/build/producer`, which was never checked — so the walk always ran all the way to the root (and then spun).
+
+The "passes in isolation / hangs in the suite" distinction tracked the **CWD**: when the CWD is such that the producer is found before the root (e.g. under `build/`), the loop returns early; when it is not (e.g. CWD = project root with the old search path), the walk reaches the root and spins.
+
+**Fix** (`tests/test_integration.cpp::find_executable`)
+- Check the directory itself **and** `build/Release`, `build/Debug`, and `build` (covers Windows multi-config and Linux single-config layouts), so the producer/consumer are found on both platforms.
+- Make the walk robust so it can never spin: break when `parent_path()` makes no progress (`parent == dir`) **and** keep a hard 1000-iteration cap as a safety net.
+
+**Verification**
+- Linux (WSL2): full suite sequence (test_message, test_queue, test_work_tracker, test_checkpoint, then test_integration) → all pass; `EndToEnd_ECHO_FullCycle` completes in ~10 s. `test_integration` in isolation also passes 7/7.
+- Windows: full build + all 12 suites pass (no regression).
 
 ## Open Questions
 
