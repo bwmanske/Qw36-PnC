@@ -13,6 +13,9 @@ struct TestPlugin {
     std::function<bool(WorkUnitMessage&)> next_unit;
     std::function<nlohmann::json()> checkpoint;
     std::function<bool()> exit_conditions;
+    // Optional "output plugin": returns plugin-specific status lines for the
+    // producer's in-place console display. May be empty.
+    std::function<std::string()> status;
 
     bool is_valid() const {
         return startup && next_unit && checkpoint && exit_conditions;

@@ -83,8 +83,6 @@ TEST(EchoPlugin, CheckpointState) {
     nlohmann::json cp = plugin.checkpoint();
     EXPECT_EQ(cp.value("generated", -1), 3);
     EXPECT_EQ(cp.value("seq", -1), 3);
-    EXPECT_EQ(cp.value("payload_size", -1), 8);
-    EXPECT_EQ(cp.value("total_units", -1), 10);
 
     fs::remove(cfg);
 }

@@ -92,6 +92,33 @@ producer --file PATH [OPTIONS]
 | `--resume`         | off            | Resume from the last checkpoint if one exists    |
 | `--test-type`      | from config    | Override test type (`PWD`, `BENCH`, or `ECHO`)   |
 | `--transfer-siblings` | off         | Transfer all sibling files in the config directory to remote consumers |
+| `--no-status`      | off            | Disable the in-place console status display (useful when capturing output to a file/CI) |
+
+### Console Status Display
+
+By default the Producer renders a multi-line status block **in place** (updated once per second, no scrolling) showing common metrics plus a per-plugin section:
+
+```
+=== Producer Status ===
+Test type:   ECHO
+Elapsed:     00:00:08
+WU/s:        2.7
+Generated:   21
+Dispatched:  21
+Completed:   20
+Failed:      0
+Pending:     1
+Consumers:   1
+--- ECHO ---
+Generated:   21
+Payload:     16 B
+=========================
+```
+
+- **WU/s** is the measured rate (work units generated / elapsed time).
+- The per-plugin section differs by test type: PWD shows `Seq`/`Max len`; BENCH shows `Offset`/`file_size` (%)/`Chunk size`; ECHO shows `Generated`/`total`/`Payload`.
+- Scrolling event logs (consumer connect/disconnect, file transfers, etc.) still appear; a shared lock keeps them from tearing the status block.
+- Use `--no-status` to suppress the block entirely (cleaner for file/CI output capture).
 
 ### Permutation Modes
 
@@ -577,7 +604,7 @@ Default checkpoint directory:
 
 ### Producer Plugins
 
-The Producer uses a `TestPlugin` dispatch table with four functions:
+The Producer uses a `TestPlugin` dispatch table:
 
 | Function | Description |
 |----------|-------------|
@@ -585,6 +612,7 @@ The Producer uses a `TestPlugin` dispatch table with four functions:
 | `next_unit(out)` | Generates next work unit, returns `false` when exhausted |
 | `checkpoint()` | Returns plugin-specific state for checkpoint merge |
 | `exit_conditions()` | Returns `true` when the plugin wants to stop |
+| `status()` | *(optional)* Returns plugin-specific status lines for the in-place console display |
 
 Built-in plugins: `PWD`, `BENCH`, and `ECHO`.
 

@@ -428,7 +428,7 @@ Supports ZIP, RAR, and 7Z formats. Used by `PWD_Handler` to verify candidate pas
 
 ### `test_plugin.h` — Plugin Dispatch Table
 
-The plugin system uses a struct of four `std::function` members:
+The plugin system uses a struct of `std::function` members:
 
 ```cpp
 struct TestPlugin {
@@ -444,7 +444,11 @@ struct TestPlugin {
     std::function<bool()> exit_conditions;
     //   () — returns true when plugin wants to stop
 
-    bool is_valid() const;  // All four functions must be non-null
+    std::function<std::string()> status;
+    //   () — optional "output plugin": returns plugin-specific status lines
+    //        for the producer's in-place console display (may be empty)
+
+    bool is_valid() const;  // The first four functions must be non-null
 };
 ```
 
@@ -533,11 +537,12 @@ Key threads:
 - **Checkpoint thread**: Periodically saves state via `CheckpointManager`
 - **File transfer thread**: Listens on `port + 1` for file download requests
 - **Monitor thread**: Scans `connected_consumers_` for stale connections (>30s idle)
+- **Status thread** (`status_loop`): Renders the in-place console status block once per second (disabled by `--no-status`); `status_mutex_` serializes it against `log()` event output
 
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments (`--file`, `--port`, `--transport`, `--permutation`, `--seed`, `--duration`, `--max-time`, `--gateway`, `--checkpoint-dir`, `--resume`, `--test-type`, `--transfer-siblings`)
+1. Parse CLI arguments (`--file`, `--port`, `--transport`, `--permutation`, `--seed`, `--duration`, `--max-time`, `--gateway`, `--checkpoint-dir`, `--resume`, `--test-type`, `--transfer-siblings`, `--no-status`)
 2. Validate config file
 3. Check for checkpoint (if `--resume`)
 4. Construct and run `Producer`

@@ -22,9 +22,10 @@ static void print_usage() {
               << "  --max-time DUR         Max time before shutdown (e.g. 30s, 5m, 1h; 0 = no limit)\n"
               << "  --gateway IP           Default local gateway IPv4 (default: 192.168.1.1)\n"
               << "  --checkpoint-dir DIR   Directory for checkpoint files (default: ./)\n"
-               << "  --resume               Resume from checkpoint if one exists\n"
-               << "  --test-type TYPE       Test type identifier (e.g. PWD)\n"
-               << "  --transfer-siblings    Transfer all sibling files in config directory to remote consumers\n";
+                << "  --resume               Resume from checkpoint if one exists\n"
+                << "  --test-type TYPE       Test type identifier (e.g. PWD)\n"
+                << "  --transfer-siblings    Transfer all sibling files in config directory to remote consumers\n"
+                << "  --no-status            Disable the in-place console status display\n";
 }
 
 int run_producer(int argc, char* argv[]) {
@@ -60,6 +61,8 @@ int run_producer(int argc, char* argv[]) {
             config.test_type = argv[++i];
         } else if (arg == "--transfer-siblings") {
             config.transfer_siblings = true;
+        } else if (arg == "--no-status") {
+            config.status_enabled = false;
         } else if (arg == "--help" || arg == "-h") {
             print_usage();
             return 0;

@@ -38,6 +38,7 @@ struct ProducerConfig {
     std::string test_type = "";
     bool transfer_siblings = false;
     int max_time_sec = 0;
+    bool status_enabled = true;
 };
 
 class Producer {
@@ -57,6 +58,9 @@ private:
     void handle_work_request(const WorkRequestMessage& req, Socket& client);
     void handle_result(const ResultMessage& result);
     void checkpoint_loop();
+    void status_loop();
+    void render_status(const std::vector<std::string>& lines);
+    void log(const std::string& msg);
     void write_final_checkpoint();
     void print_statistics();
     std::string generate_producer_id();
@@ -95,12 +99,21 @@ private:
 
     std::atomic<bool> running_{false};
     std::atomic<bool> checkpoint_running_{false};
+    std::atomic<bool> shutdown_done_{false};
 
     Socket server_socket_;
     std::vector<std::thread> client_threads_;
     std::mutex client_mutex_;
     std::thread dispatcher_thread_;
     std::thread checkpoint_thread_;
+
+    // In-place console status display (1 Hz). status_mutex_ serializes the
+    // status render against scrolling event logs (see log()).
+    bool status_enabled_ = true;
+    std::atomic<bool> status_running_{false};
+    std::thread status_thread_;
+    std::mutex status_mutex_;
+    size_t status_lines_prev_ = 0;
 
     struct ConsumerInfo {
         Socket* socket = nullptr;

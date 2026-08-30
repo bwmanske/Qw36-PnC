@@ -5,14 +5,15 @@
 #include <sstream>
 #include <random>
 #include <chrono>
+#include <atomic>
 
 namespace pc {
 
 struct ECHOState {
     int payload_size = 64;
     int64_t total_units = 0;
-    int64_t generated = 0;
-    int64_t seq = 0;
+    std::atomic<int64_t> generated{0};
+    std::atomic<int64_t> seq{0};
     std::mt19937 rng;
 };
 
@@ -54,13 +55,13 @@ pc::TestPlugin create_echo_plugin() {
 
         std::cout << "[ECHO_StartUp] payload_size=" << g_echo_state->payload_size
                   << " total_units=" << g_echo_state->total_units
-                  << " generated=" << g_echo_state->generated << "\n";
+                  << " generated=" << g_echo_state->generated.load() << "\n";
     };
 
     plugin.next_unit = [](WorkUnitMessage& out) {
         if (!g_echo_state) return false;
 
-        if (g_echo_state->total_units > 0 && g_echo_state->generated >= g_echo_state->total_units) {
+        if (g_echo_state->total_units > 0 && g_echo_state->generated.load() >= g_echo_state->total_units) {
             return false;
         }
 
@@ -69,7 +70,7 @@ pc::TestPlugin create_echo_plugin() {
 
         std::ostringstream oss;
         for (int i = 0; i < g_echo_state->payload_size; i++) {
-            char c = 'A' + (g_echo_state->seq + i) % 26;
+            char c = 'A' + (g_echo_state->seq.load() + i) % 26;
             oss << c;
         }
         std::string payload = oss.str();
@@ -80,7 +81,7 @@ pc::TestPlugin create_echo_plugin() {
         out.job["task"] = "ECHO";
         out.job["payload"] = payload;
         out.job["hash"] = hash;
-        out.job["seq"] = g_echo_state->seq;
+        out.job["seq"] = g_echo_state->seq.load();
 
         return true;
     };
@@ -89,18 +90,30 @@ pc::TestPlugin create_echo_plugin() {
         nlohmann::json j;
         if (!g_echo_state) return j;
 
-        j["generated"] = g_echo_state->generated;
-        j["seq"] = g_echo_state->seq;
-        j["payload_size"] = g_echo_state->payload_size;
-        j["total_units"] = g_echo_state->total_units;
+        j["generated"] = g_echo_state->generated.load();
+        j["seq"] = g_echo_state->seq.load();
 
         return j;
+    };
+
+    plugin.status = []() {
+        if (!g_echo_state) return std::string();
+        std::ostringstream oss;
+        int64_t gen = g_echo_state->generated.load();
+        int64_t total = g_echo_state->total_units;
+        if (total > 0) {
+            oss << "Generated:   " << gen << " / " << total << "\n";
+        } else {
+            oss << "Generated:   " << gen << "\n";
+        }
+        oss << "Payload:     " << g_echo_state->payload_size << " B";
+        return oss.str();
     };
 
     plugin.exit_conditions = []() {
         if (!g_echo_state) return false;
         if (g_echo_state->total_units > 0) {
-            return g_echo_state->generated >= g_echo_state->total_units;
+            return g_echo_state->generated.load() >= g_echo_state->total_units;
         }
         return false;
     };

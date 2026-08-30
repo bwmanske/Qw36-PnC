@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <atomic>
+#include <iomanip>
 
 namespace pc {
 namespace fs = std::filesystem;
@@ -15,10 +17,10 @@ struct BENCHState {
     std::string source_file;
     int chunk_size = 128;
     int64_t file_size = 0;
-    int64_t offset = 0;
+    std::atomic<int64_t> offset{0};
     int64_t total_chunks = 0;
-    int64_t processed = 0;
-    int64_t seq = 0;
+    std::atomic<int64_t> processed{0};
+    std::atomic<int64_t> seq{0};
     std::chrono::steady_clock::time_point start_time;
     double transactions_per_second = 0.0;
 };
@@ -86,7 +88,7 @@ pc::TestPlugin create_bench_plugin() {
         }
 
         std::cout << "[BENCH_StartUp] chunk_size=" << g_bench_state->chunk_size
-                  << " offset=" << g_bench_state->offset << "\n";
+                  << " offset=" << g_bench_state->offset.load() << "\n";
     };
 
     plugin.next_unit = [](WorkUnitMessage& out) {
@@ -94,7 +96,7 @@ pc::TestPlugin create_bench_plugin() {
 
         if (g_bench_state->source_file.empty()) return false;
 
-        if (g_bench_state->offset >= g_bench_state->file_size) return false;
+        if (g_bench_state->offset.load() >= g_bench_state->file_size) return false;
 
         std::ifstream file(g_bench_state->source_file, std::ios::binary);
         if (!file.is_open()) {
@@ -102,8 +104,8 @@ pc::TestPlugin create_bench_plugin() {
             return false;
         }
 
-        file.seekg(g_bench_state->offset, std::ios::beg);
-        int64_t remaining = g_bench_state->file_size - g_bench_state->offset;
+        file.seekg(g_bench_state->offset.load(), std::ios::beg);
+        int64_t remaining = g_bench_state->file_size - g_bench_state->offset.load();
         int64_t to_read = std::min(static_cast<int64_t>(g_bench_state->chunk_size), remaining);
 
         std::vector<uint8_t> chunk(static_cast<size_t>(to_read));
@@ -117,11 +119,11 @@ pc::TestPlugin create_bench_plugin() {
 
         out.job = nlohmann::json::object();
         out.job["task"] = "BENCH";
-        out.job["offset"] = g_bench_state->offset;
+        out.job["offset"] = g_bench_state->offset.load();
         out.job["chunk_size"] = to_read;
         out.job["data"] = b64;
         out.job["hash"] = hash;
-        out.job["seq"] = g_bench_state->seq;
+        out.job["seq"] = g_bench_state->seq.load();
 
         g_bench_state->offset += to_read;
 
@@ -132,20 +134,26 @@ pc::TestPlugin create_bench_plugin() {
         nlohmann::json j;
         if (!g_bench_state) return j;
 
-        j["offset"] = g_bench_state->offset;
-        j["processed"] = g_bench_state->processed;
-        j["seq"] = g_bench_state->seq;
-        j["chunk_size"] = g_bench_state->chunk_size;
-        j["file_size"] = g_bench_state->file_size;
-        j["total_chunks"] = g_bench_state->total_chunks;
-        j["transactions_per_second"] = g_bench_state->transactions_per_second;
+        j["offset"] = g_bench_state->offset.load();
+        j["seq"] = g_bench_state->seq.load();
 
         return j;
     };
 
+    plugin.status = []() {
+        if (!g_bench_state) return std::string();
+        std::ostringstream oss;
+        int64_t off = g_bench_state->offset.load();
+        int64_t fsz = g_bench_state->file_size;
+        double pct = (fsz > 0) ? (100.0 * static_cast<double>(off) / static_cast<double>(fsz)) : 0.0;
+        oss << "Offset:      " << off << " / " << fsz << " (" << std::fixed << std::setprecision(1) << pct << "%)\n"
+            << "Chunk size:  " << g_bench_state->chunk_size;
+        return oss.str();
+    };
+
     plugin.exit_conditions = []() {
         if (!g_bench_state) return false;
-        return g_bench_state->offset >= g_bench_state->file_size;
+        return g_bench_state->offset.load() >= g_bench_state->file_size;
     };
 
     return plugin;

@@ -15,7 +15,7 @@ struct PWDState {
     bool use_numeric = false;
     bool use_non_alpha = false;
     int max_pwd_len = 10;
-    int seq = 0;
+    std::atomic<int> seq{0};
 };
 
 static PWDState* g_pwd_state = nullptr;
@@ -156,7 +156,7 @@ pc::TestPlugin create_pwd_plugin() {
         out.job["password"] = pwd_str;
         out.job["indicies"] = g_pwd_state->generator.get_pwdAsIndicies();
         out.job["text"] = g_pwd_state->generator.get_pwdAsText();
-        out.job["seq"] = g_pwd_state->seq;
+        out.job["seq"] = g_pwd_state->seq.load();
 
         return true;
     };
@@ -165,7 +165,7 @@ pc::TestPlugin create_pwd_plugin() {
         nlohmann::json j;
         if (!g_pwd_state) return j;
 
-        j["seq"] = g_pwd_state->seq;
+        j["seq"] = g_pwd_state->seq.load();
         j["testPwdLen"] = g_pwd_state->generator.get_testPwdLen();
 
         nlohmann::json ci = nlohmann::json::array();
@@ -175,6 +175,14 @@ pc::TestPlugin create_pwd_plugin() {
         j["charIndicies"] = ci;
 
         return j;
+    };
+
+    plugin.status = []() {
+        if (!g_pwd_state) return std::string();
+        std::ostringstream oss;
+        oss << "Seq:         " << g_pwd_state->seq.load() << "\n"
+            << "Max len:     " << g_pwd_state->max_pwd_len;
+        return oss.str();
     };
 
     plugin.exit_conditions = []() {

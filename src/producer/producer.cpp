@@ -16,16 +16,34 @@
 #include <cstring>
 #ifndef _WIN32
 #include <arpa/inet.h>
+#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 namespace pc {
 namespace fs = std::filesystem;
 
+// Enable ANSI/VT escape sequence processing on the Windows console (Win10+).
+// No-op on failure or on non-Windows platforms.
+static void enable_vt_processing() {
+#ifdef _WIN32
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (h == INVALID_HANDLE_VALUE) return;
+    DWORD mode = 0;
+    if (!GetConsoleMode(h, &mode)) return;
+    SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+#endif
+}
+
 Producer::Producer(const ProducerConfig& config)
     : config_(config),
       checkpoint_mgr_(config.checkpoint_dir),
       dispatch_queue_(1024),
-      result_queue_(256) {
+      result_queue_(256),
+      status_enabled_(config.status_enabled) {
     producer_id_ = generate_producer_id();
 }
 
@@ -34,6 +52,10 @@ Producer::~Producer() {
 }
 
 void Producer::run() {
+    if (status_enabled_) {
+        enable_vt_processing();
+    }
+
     load_job_config();
 
     if (config_.resume && checkpoint_mgr_.exists()) {
@@ -70,6 +92,7 @@ void Producer::run() {
     file_transfer_running_ = true;
     monitor_running_ = true;
     udp_running_ = (config_.transport == Transport::UDP);
+    status_running_ = status_enabled_;
     start_time_ = std::chrono::steady_clock::now();
 
     checkpoint_thread_ = std::thread(&Producer::checkpoint_loop, this);
@@ -78,6 +101,9 @@ void Producer::run() {
     monitor_thread_ = std::thread(&Producer::monitor_connections, this);
     if (udp_running_) {
         udp_thread_ = std::thread(&Producer::udp_loop, this);
+    }
+    if (status_enabled_) {
+        status_thread_ = std::thread(&Producer::status_loop, this);
     }
 
     if (config_.transport == Transport::TCP) {
@@ -105,11 +131,19 @@ void Producer::run() {
 }
 
 void Producer::shutdown() {
+    // shutdown() is called from both run() and the destructor; ensure the
+    // teardown (and the final checkpoint + statistics) runs exactly once.
+    bool expected = false;
+    if (!shutdown_done_.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
     running_ = false;
     checkpoint_running_ = false;
     file_transfer_running_ = false;
     monitor_running_ = false;
     udp_running_ = false;
+    status_running_ = false;
 
     dispatch_queue_.shutdown();
     result_queue_.shutdown();
@@ -123,6 +157,15 @@ void Producer::shutdown() {
     if (file_transfer_thread_.joinable()) file_transfer_thread_.join();
     if (monitor_thread_.joinable()) monitor_thread_.join();
     if (udp_thread_.joinable()) udp_thread_.join();
+    if (status_thread_.joinable()) status_thread_.join();
+
+    // Move the cursor below the last status block so the shell prompt and the
+    // final statistics don't overwrite it.
+    if (status_enabled_ && status_lines_prev_ > 0) {
+        std::lock_guard<std::mutex> lock(status_mutex_);
+        std::cout << "\n";
+        status_lines_prev_ = 0;
+    }
 
     write_final_checkpoint();
     print_statistics();
@@ -245,7 +288,7 @@ void Producer::init_plugin() {
 void Producer::dispatcher_loop() {
     while (running_ && !SignalHandler::is_stop_requested()) {
         if (plugin_.exit_conditions && plugin_.exit_conditions()) {
-            std::cout << "[producer] Plugin exit conditions met, shutting down\n";
+            log("[producer] Plugin exit conditions met, shutting down");
             running_ = false;
             break;
         }
@@ -254,14 +297,14 @@ void Producer::dispatcher_loop() {
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::steady_clock::now() - start_time_).count();
             if (elapsed >= config_.max_time_sec) {
-                std::cout << "[producer] Max time reached (" << config_.max_time_sec << "s), shutting down\n";
+                log("[producer] Max time reached (" + std::to_string(config_.max_time_sec) + "s), shutting down");
                 running_ = false;
                 break;
             }
         }
 
         if (max_units_ > 0 && tracker_.completed_count() >= static_cast<int64_t>(max_units_)) {
-            std::cout << "[producer] Max units reached (" << max_units_ << "), shutting down\n";
+            log("[producer] Max units reached (" + std::to_string(max_units_) + "), shutting down");
             running_ = false;
             break;
         }
@@ -300,8 +343,7 @@ void Producer::handle_client(Socket client_socket) {
             send_frame(client_socket, ver_resp.dump());
             consumer_id = ver.consumer_id;
             register_consumer(consumer_id, client_socket);
-            std::cout << "[producer] Consumer connected: " << consumer_id
-                      << " (v" << PC_VERSION << ")\n";
+            log("[producer] Consumer connected: " + consumer_id + " (v" + PC_VERSION + ")");
         }
 
         while (running_ && client_socket.is_open()) {
@@ -342,8 +384,8 @@ void Producer::handle_client(Socket client_socket) {
 
     if (!consumer_id.empty()) {
         auto reclaimed = tracker_.get_failed_for_consumer(consumer_id);
-        std::cout << "[producer] Consumer disconnected: " << consumer_id
-                  << " (reclaimed " << reclaimed.size() << " work units)\n";
+        log("[producer] Consumer disconnected: " + consumer_id +
+            " (reclaimed " + std::to_string(reclaimed.size()) + " work units)");
         unregister_consumer(consumer_id);
     }
     client_socket.close();
@@ -362,7 +404,7 @@ void Producer::handle_work_request(const WorkRequestMessage& req, Socket& client
         msg.producer_id = producer_id_;
 
         if (!plugin_.next_unit(msg)) {
-            std::cout << "[producer] Plugin exhausted, no more work units\n";
+            log("[producer] Plugin exhausted, no more work units");
             break;
         }
 
@@ -393,7 +435,7 @@ void Producer::handle_result(const ResultMessage& result) {
         tracker_.mark_completed(result.work_unit_id);
         if (result.found_password.has_value()) {
             pwd_set_found(result.found_password.value());
-            std::cout << "[producer] PASSWORD FOUND: " << result.found_password.value() << "\n";
+            log("[producer] PASSWORD FOUND: " + result.found_password.value());
             running_ = false;
         }
     } else {
@@ -422,6 +464,89 @@ void Producer::checkpoint_loop() {
             checkpoint_mgr_.save(state);
             last_write = now;
         }
+    }
+}
+
+void Producer::log(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    std::cout << msg << "\n" << std::flush;
+}
+
+void Producer::render_status(const std::vector<std::string>& lines) {
+    std::lock_guard<std::mutex> lock(status_mutex_);
+    std::ostringstream oss;
+    size_t n = lines.size();
+    if (status_lines_prev_ > 0) {
+        oss << "\033[" << status_lines_prev_ << "A";
+    }
+    for (size_t i = 0; i < n; i++) {
+        oss << "\033[2K" << lines[i] << "\n";
+    }
+    if (status_lines_prev_ > n) {
+        for (size_t i = n; i < status_lines_prev_; i++) {
+            oss << "\033[2K\n";
+        }
+        oss << "\033[" << (status_lines_prev_ - n) << "A";
+    }
+    std::cout << oss.str() << std::flush;
+    status_lines_prev_ = n;
+}
+
+void Producer::status_loop() {
+    while (status_running_) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!status_running_) break;
+
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - start_time_).count();
+        double elapsed_sec = (elapsed > 0) ? static_cast<double>(elapsed) : 1.0;
+        double wu_per_sec = static_cast<double>(total_generated_) / elapsed_sec;
+
+        // Elapsed as HH:MM:SS
+        int64_t total_sec = elapsed;
+        int hh = static_cast<int>(total_sec / 3600);
+        int mm = static_cast<int>((total_sec % 3600) / 60);
+        int ss = static_cast<int>(total_sec % 60);
+
+        size_t consumers = 0;
+        {
+            std::lock_guard<std::mutex> lock(consumers_mutex_);
+            consumers = connected_consumers_.size();
+        }
+
+        std::ostringstream wsp;
+        wsp << std::fixed << std::setprecision(1) << wu_per_sec;
+        std::ostringstream esp;
+        esp << std::setfill('0') << std::setw(2) << hh << ":"
+            << std::setfill('0') << std::setw(2) << mm << ":"
+            << std::setfill('0') << std::setw(2) << ss;
+
+        std::vector<std::string> lines;
+        lines.push_back("=== Producer Status ===");
+        lines.push_back("Test type:   " + test_type_);
+        lines.push_back("Elapsed:     " + esp.str());
+        lines.push_back("WU/s:        " + wsp.str());
+        lines.push_back("Generated:   " + std::to_string(total_generated_));
+        lines.push_back("Dispatched:  " + std::to_string(total_dispatched_));
+        lines.push_back("Completed:   " + std::to_string(tracker_.completed_count()));
+        lines.push_back("Failed:      " + std::to_string(tracker_.failed_count()));
+        lines.push_back("Pending:     " + std::to_string(tracker_.pending_count()));
+        lines.push_back("Consumers:   " + std::to_string(consumers));
+        lines.push_back("--- " + test_type_ + " ---");
+        if (plugin_.status) {
+            std::string plugin_status = plugin_.status();
+            if (!plugin_status.empty()) {
+                // Split the plugin status into lines.
+                std::istringstream iss(plugin_status);
+                std::string line;
+                while (std::getline(iss, line)) {
+                    lines.push_back(line);
+                }
+            }
+        }
+        lines.push_back("=========================");
+
+        render_status(lines);
     }
 }
 
@@ -529,7 +654,7 @@ void Producer::handle_file_transfer(Socket client_socket) {
                     offset += static_cast<size_t>(sent);
                 }
             }
-            std::cout << "[producer] Sent manifest with " << additional_files_.size() << " file(s)\n";
+            log("[producer] Sent manifest with " + std::to_string(additional_files_.size()) + " file(s)");
             return;
         }
 
@@ -542,7 +667,7 @@ void Producer::handle_file_transfer(Socket client_socket) {
         size_t null_pos = filename.find('\0');
         if (null_pos != std::string::npos) filename.erase(null_pos);
 
-        std::cout << "[producer] File transfer request: " << filename << "\n";
+        log("[producer] File transfer request: " + filename);
 
         std::string file_path;
         fs::path config_dir = fs::path(config_.file_path).parent_path();
@@ -595,7 +720,7 @@ void Producer::handle_file_transfer(Socket client_socket) {
             }
         }
 
-        std::cout << "[producer] Sent " << file_size << " bytes for " << filename << "\n";
+        log("[producer] Sent " + std::to_string(file_size) + " bytes for " + filename);
 
     } catch (const std::exception& e) {
         std::cerr << "[producer] File transfer error: " << e.what() << "\n";
@@ -612,8 +737,8 @@ void Producer::register_consumer(const std::string& consumer_id, Socket& socket)
         info.last_activity = std::chrono::steady_clock::now();
         info.registered_at = info.last_activity;
         connected_consumers_[consumer_id] = std::move(info);
-        std::cout << "[producer] Consumer registered: " << consumer_id
-                  << " (total: " << connected_consumers_.size() << ")\n";
+        log("[producer] Consumer registered: " + consumer_id +
+            " (total: " + std::to_string(connected_consumers_.size()) + ")");
     } else {
         it->second.socket = &socket;
         it->second.last_activity = std::chrono::steady_clock::now();
@@ -657,8 +782,8 @@ void Producer::monitor_connections() {
         }
 
         for (const auto& id : stale) {
-            std::cout << "[producer] Consumer stale (no activity for "
-                      << kHeartbeatTimeoutSec << "s): " << id << "\n";
+            log("[producer] Consumer stale (no activity for " +
+                std::to_string(kHeartbeatTimeoutSec) + "s): " + id);
 
             std::lock_guard<std::mutex> lock(consumers_mutex_);
             auto it = connected_consumers_.find(id);
@@ -667,8 +792,8 @@ void Producer::monitor_connections() {
             }
 
             auto reclaimed = tracker_.get_failed_for_consumer(id);
-            std::cout << "[producer] Reclaimed " << reclaimed.size()
-                      << " work units from stale consumer " << id << "\n";
+            log("[producer] Reclaimed " + std::to_string(reclaimed.size()) +
+                " work units from stale consumer " + id);
             connected_consumers_.erase(it);
         }
     }
@@ -713,8 +838,8 @@ void Producer::handle_udp_message(const std::string& consumer_id, const std::str
         ver_resp["status"] = "ok";
         send_frame_udp(server_socket_, address, port, ver_resp.dump());
         register_consumer_udp(ver.consumer_id, address, port);
-        std::cout << "[producer] Consumer connected (UDP): " << ver.consumer_id
-                  << " @" << address << ":" << port << " (v" << PC_VERSION << ")\n";
+        log("[producer] Consumer connected (UDP): " + ver.consumer_id +
+            " @" + address + ":" + std::to_string(port) + " (v" + PC_VERSION + ")");
     } else if (msg_type == "work_request") {
         WorkRequestMessage req = WorkRequestMessage::from_json(j);
         update_consumer_activity(req.consumer_id);
@@ -742,7 +867,7 @@ void Producer::handle_udp_work_request(const WorkRequestMessage& req, const std:
         msg.producer_id = producer_id_;
 
         if (!plugin_.next_unit(msg)) {
-            std::cout << "[producer] Plugin exhausted, no more work units\n";
+            log("[producer] Plugin exhausted, no more work units");
             break;
         }
 
@@ -778,8 +903,8 @@ void Producer::register_consumer_udp(const std::string& consumer_id, const std::
         info.last_activity = std::chrono::steady_clock::now();
         info.registered_at = info.last_activity;
         connected_consumers_[consumer_id] = std::move(info);
-        std::cout << "[producer] Consumer registered (UDP): " << consumer_id
-                  << " (total: " << connected_consumers_.size() << ")\n";
+        log("[producer] Consumer registered (UDP): " + consumer_id +
+            " (total: " + std::to_string(connected_consumers_.size()) + ")");
     } else {
         it->second.address = address;
         it->second.port = port;

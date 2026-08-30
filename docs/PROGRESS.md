@@ -65,6 +65,17 @@
 - [x] Consumer verifies local file hash against `source_hash`; re-downloads on mismatch
 - [x] Checkpoint data directory defaults to `%APPDATA%\Producer\` (Win) / `~/.local/share/producer/` (Linux)
 
+### Producer Status Display & Checkpoint Placeholders
+- [x] `TestPlugin.status` — optional 5th member ("output plugin"); each plugin returns its own status lines for the console display
+- [x] In-place producer console status (1 Hz, multi-line block): common metrics (elapsed, **WU/s = generated/elapsed**, generated, dispatched, completed, failed, pending, consumers) + per-plugin section
+  - PWD → `Seq`, `Max len`; BENCH → `Offset`/`file_size` (%), `Chunk size`; ECHO → `Generated`/`total`, `Payload` size
+  - Rendered in place via ANSI (`\033[<N>A` cursor-up + `\033[2K` clear-line); Windows enables `ENABLE_VIRTUAL_TERMINAL_PROCESSING` at startup
+  - `status_mutex_` serializes the status render against scrolling event logs (all `std::cout` event logs routed through `Producer::log()`) so output never tears
+- [x] `--no-status` CLI flag disables the status block (clean output for file/CI capture)
+- [x] Consistent checkpoint placeholders — all three `checkpoint()` routines return minimal key resumable state (PWD: `seq`/`testPwdLen`/`charIndicies`; BENCH: `offset`/`seq`; ECHO: `generated`/`seq`); real serialization is future work
+- [x] Progress counters made `std::atomic` (PWD `seq`; BENCH `offset`/`seq`; ECHO `generated`/`seq`) so the status thread reads them safely
+- [x] `Producer::shutdown()` made idempotent (`shutdown_done_` guard) — fixes pre-existing double "Checkpoint written" + "Statistics" output (it was called from both `run()` and the destructor)
+
 ## Remaining
 
 ### High Priority
@@ -93,7 +104,7 @@
 - [x] Additional handler types (XXX_NextUnit + XXX_Handler pairs)
 - [x] Producer `--max-time DUR` and consumer `--timeout SEC` shutdown options (`parse_duration` in `common/util`)
 - [x] Consumer idle safety net — main loop requests work when pool is fully idle (`ThreadPool::queue_empty()`)
-- [ ] `PWD_NextUnit` checkpoint state serialization for resume
+- [ ] `PWD_NextUnit` checkpoint state serialization for resume (placeholder in place — PWD `checkpoint()` returns `seq`/`testPwdLen`/`charIndicies` but `charIndicies` is zero-filled; the real generator state still needs to be serialized)
 
 ### Low Priority
 - [x] Linux build verification — build + **12/12 suites pass** on WSL2 (the `test_integration` suite-context hang was root-caused and fixed; see **Known Issues**)
