@@ -72,9 +72,24 @@
   - Rendered in place via ANSI (`\033[<N>A` cursor-up + `\033[2K` clear-line); Windows enables `ENABLE_VIRTUAL_TERMINAL_PROCESSING` at startup
   - `status_mutex_` serializes the status render against scrolling event logs (all `std::cout` event logs routed through `Producer::log()`) so output never tears
 - [x] `--no-status` CLI flag disables the status block (clean output for file/CI capture)
-- [x] Consistent checkpoint placeholders — all three `checkpoint()` routines return minimal key resumable state (PWD: `seq`/`testPwdLen`/`charIndicies`; BENCH: `offset`/`seq`; ECHO: `generated`/`seq`); real serialization is future work
+- [x] Consistent checkpoint placeholders — all three `checkpoint()` routines return minimal key resumable state (PWD: `seq`/`testPwdLen`/`charIndicies`; BENCH: `offset`/`seq`; ECHO: `generated`/`seq`)
 - [x] Progress counters made `std::atomic` (PWD `seq`; BENCH `offset`/`seq`; ECHO `generated`/`seq`) so the status thread reads them safely
 - [x] `Producer::shutdown()` made idempotent (`shutdown_done_` guard) — fixes pre-existing double "Checkpoint written" + "Statistics" output (it was called from both `run()` and the destructor)
+
+### PWD Checkpoint Serialization (real resume)
+- [x] `PWD_NextUnit` accessors — added `get_charIndicies(int)`, `get_permuteStatus()`, `set_permuteStatus(int)` (the class previously only had a per-index setter, so `checkpoint()` could not read the real odometer state)
+- [x] PWD `checkpoint()` now saves the real generator position: `charIndicies[0..9]` (was zero-filled), `testPwdLen`, `permuteStatus`, `seq`
+- [x] PWD `startup()` restores `permuteStatus` in addition to `charIndicies`/`testPwdLen`/`seq` — an exhausted (`PERMUTE_DONE`) generator stays exhausted on resume
+- [x] Tests — `GetCharIndicies_RoundTrip`, `PermuteStatus_DefaultSuccess`, `PermuteStatus_SetGet`, `CheckpointRoundTrip_FullState` (multi-digit position round-trips to the identical next password), `CheckpointRoundTrip_DoneStaysDone`
+- [x] E2E verified — real producer+consumer PWD run: checkpoint holds real indicies (e.g. `charIndicies[0]=23`='x', `seq=24`); `--resume` continues seamlessly from 'x' → 'y','z' → 2-char wrap, `seq` 24→48 with no reset or gap
+
+### Localhost Consumer CPU Yield
+- [x] Rationale — the producer services each consumer on a dedicated I/O thread (no central dispatch bottleneck), so the only cross-connection contention is CPU. A CPU-heavy local PWD consumer (`ArchiveValidator::validate`) can saturate the box and delay the producer's I/O bursts → remote TCP backpressure. Lowering the local consumer's priority lets the producer's bursts win under saturation.
+- [x] `common/util` helpers — `is_localhost_host(host)` (true for `localhost`/`::1`/any `127.0.0.0/8`) and `set_process_priority_below_normal()` (Windows: `BELOW_NORMAL_PRIORITY_CLASS`; Linux: `setpriority(PRIO_PROCESS, 0, 5)` — nice `+5` approximates Windows *below normal*; raising nice needs no elevated privileges)
+- [x] Consumer auto-yields — at the top of `Consumer::run()` (before worker threads start, so they inherit it), a consumer whose effective host is localhost lowers its process priority and logs it
+- [x] `--no-yield` CLI flag — sets `ConsumerConfig::yield_cpu = false` to opt out (e.g. local-only runs wanting max local throughput)
+- [x] Producer priority intentionally unchanged (it is I/O-bound; raising it buys little and risks priority inversion with disk/network)
+- [x] Tests — `IsLocalhostHost.*` (loopback v4/v6, name, non-local, malformed) + `ProcessPriority.SetBelowNormal` (set → assert → restore; skips if the OS call is unavailable)
 
 ## Remaining
 
@@ -104,7 +119,7 @@
 - [x] Additional handler types (XXX_NextUnit + XXX_Handler pairs)
 - [x] Producer `--max-time DUR` and consumer `--timeout SEC` shutdown options (`parse_duration` in `common/util`)
 - [x] Consumer idle safety net — main loop requests work when pool is fully idle (`ThreadPool::queue_empty()`)
-- [ ] `PWD_NextUnit` checkpoint state serialization for resume (placeholder in place — PWD `checkpoint()` returns `seq`/`testPwdLen`/`charIndicies` but `charIndicies` is zero-filled; the real generator state still needs to be serialized)
+- [x] `PWD_NextUnit` checkpoint state serialization for resume — PWD `checkpoint()` now saves the real generator position (`charIndicies[0..9]` via new `get_charIndicies()`, `testPwdLen`, `permuteStatus` via new `get_permuteStatus()`); `startup()` restores all three (new `set_permuteStatus()`). Verified e2e: checkpoint holds real indicies and `--resume` continues seamlessly (no reset/gap).
 
 ### Low Priority
 - [x] Linux build verification — build + **12/12 suites pass** on WSL2 (the `test_integration` suite-context hang was root-caused and fixed; see **Known Issues**)

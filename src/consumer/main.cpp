@@ -43,6 +43,8 @@ int main(int argc, char* argv[]) {
             config.max_duration_sec = std::stoi(argv[++i]);
         } else if (arg == "--timeout" && i + 1 < argc) {
             config.idle_timeout_sec = std::stoi(argv[++i]);
+        } else if (arg == "--no-yield") {
+            config.yield_cpu = false;
         } else if (arg == "--help" || arg == "-h") {
             std::cerr << "Usage: consumer [OPTIONS]\n"
                       << "\nOptions:\n"
@@ -60,7 +62,8 @@ int main(int argc, char* argv[]) {
                         << "  --result-file FILE   Write results to JSON lines file\n"
                         << "  --max-failures N     Stop after N failures (0 = no limit)\n"
                         << "  --max-duration SEC   Stop after N seconds (0 = no limit)\n"
-                        << "  --timeout SEC        Close after N seconds without producer communication (0 = no limit)\n";
+                        << "  --timeout SEC        Close after N seconds without producer communication (0 = no limit)\n"
+                        << "  --no-yield           Do not lower process priority when connecting to a localhost producer\n";
             return 0;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";

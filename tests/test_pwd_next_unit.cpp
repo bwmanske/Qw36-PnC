@@ -319,3 +319,101 @@ TEST(PWD_NextUnit, Indicies_Match_Reversed_String) {
     // charIndicies[1]=0 ('a'), charIndicies[0]=3 ('d') → "2,0,3"
     EXPECT_EQ(idxStr, "2,0,3");
 }
+
+// ── Checkpoint accessor tests (get_charIndicies / permuteStatus) ──
+
+TEST(PWD_NextUnit, GetCharIndicies_RoundTrip) {
+    PWD_NextUnit u;
+    u.set_useLAlpha(true);
+
+    // Default: all -1
+    for (int i = 0; i < MAX_PWD_LEN; i++) {
+        EXPECT_EQ(u.get_charIndicies(i), -1);
+    }
+
+    u.set_charIndicies(0, 5);
+    u.set_charIndicies(3, 9);
+    EXPECT_EQ(u.get_charIndicies(0), 5);
+    EXPECT_EQ(u.get_charIndicies(3), 9);
+    EXPECT_EQ(u.get_charIndicies(1), -1); // untouched
+}
+
+TEST(PWD_NextUnit, PermuteStatus_DefaultSuccess) {
+    PWD_NextUnit u;
+    EXPECT_EQ(u.get_permuteStatus(), PERMUTE_SUCCESS);
+}
+
+TEST(PWD_NextUnit, PermuteStatus_SetGet) {
+    PWD_NextUnit u;
+    u.set_permuteStatus(PERMUTE_DONE);
+    EXPECT_EQ(u.get_permuteStatus(), PERMUTE_DONE);
+    u.set_permuteStatus(PERMUTE_SUCCESS);
+    EXPECT_EQ(u.get_permuteStatus(), PERMUTE_SUCCESS);
+}
+
+// ── Full checkpoint round-trip (all 10 indicies + len + status) ───
+
+TEST(PWD_NextUnit, CheckpointRoundTrip_FullState) {
+    PWD_NextUnit u;
+    u.set_useLAlpha(true);
+    u.set_useUAlpha(true);
+
+    // Advance past all 52 single chars into two-char territory (multi-digit)
+    for (int i = 0; i < 100; i++) {
+        u.setNext();
+    }
+
+    // Capture full state
+    int savedLen = u.get_testPwdLen();
+    int savedStatus = u.get_permuteStatus();
+    int savedIndicies[MAX_PWD_LEN];
+    for (int i = 0; i < MAX_PWD_LEN; i++) {
+        savedIndicies[i] = u.get_charIndicies(i);
+    }
+
+    // The next password the original would produce
+    int ret = u.setNext();
+    ASSERT_EQ(ret, PERMUTE_SUCCESS);
+    std::string expected = u.get_plainPassword();
+
+    // Restore into a fresh generator
+    PWD_NextUnit u2;
+    u2.set_useLAlpha(true);
+    u2.set_useUAlpha(true);
+    u2.set_testPwdLen(savedLen);
+    u2.set_permuteStatus(savedStatus);
+    for (int i = 0; i < MAX_PWD_LEN; i++) {
+        u2.set_charIndicies(i, savedIndicies[i]);
+    }
+
+    // u2's next should match the original's next
+    int ret2 = u2.setNext();
+    ASSERT_EQ(ret2, PERMUTE_SUCCESS);
+    EXPECT_STREQ(u2.get_plainPassword(), expected.c_str());
+}
+
+TEST(PWD_NextUnit, CheckpointRoundTrip_DoneStaysDone) {
+    PWD_NextUnit u;
+    u.set_useLAlpha(true);
+
+    // Simulate an exhausted generator
+    u.set_permuteStatus(PERMUTE_DONE);
+
+    int savedStatus = u.get_permuteStatus();
+    int savedLen = u.get_testPwdLen();
+    int savedIndicies[MAX_PWD_LEN];
+    for (int i = 0; i < MAX_PWD_LEN; i++) {
+        savedIndicies[i] = u.get_charIndicies(i);
+    }
+
+    PWD_NextUnit u2;
+    u2.set_useLAlpha(true);
+    u2.set_testPwdLen(savedLen);
+    u2.set_permuteStatus(savedStatus);
+    for (int i = 0; i < MAX_PWD_LEN; i++) {
+        u2.set_charIndicies(i, savedIndicies[i]);
+    }
+
+    // Restored DONE generator should immediately report done
+    EXPECT_EQ(u2.setNext(), PERMUTE_DONE);
+}

@@ -128,6 +128,9 @@ pc::TestPlugin create_pwd_plugin() {
             if (resume_state.contains("testPwdLen")) {
                 g_pwd_state->generator.set_testPwdLen(resume_state["testPwdLen"].get<int>());
             }
+            if (resume_state.contains("permuteStatus")) {
+                g_pwd_state->generator.set_permuteStatus(resume_state["permuteStatus"].get<int>());
+            }
             if (resume_state.contains("seq")) {
                 g_pwd_state->seq = resume_state["seq"].get<int>();
             }
@@ -167,10 +170,11 @@ pc::TestPlugin create_pwd_plugin() {
 
         j["seq"] = g_pwd_state->seq.load();
         j["testPwdLen"] = g_pwd_state->generator.get_testPwdLen();
+        j["permuteStatus"] = g_pwd_state->generator.get_permuteStatus();
 
         nlohmann::json ci = nlohmann::json::array();
         for (int i = 0; i < 10; i++) {
-            ci.push_back(0);
+            ci.push_back(g_pwd_state->generator.get_charIndicies(i));
         }
         j["charIndicies"] = ci;
 

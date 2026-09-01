@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <filesystem>
+#include <cctype>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -15,6 +16,7 @@
 #include <windows.h>
 #else
 #include <cstdlib>
+#include <sys/resource.h>
 #endif
 
 namespace pc {
@@ -237,6 +239,55 @@ int parse_duration(const std::string& s) {
     if (suffix == 'm') return value * 60;
     if (suffix == 'h') return value * 3600;
     return value;
+}
+
+// ── Process priority ─────────────────────────────────────────────
+
+bool is_localhost_host(const std::string& host) {
+    std::string h = host;
+    std::transform(h.begin(), h.end(), h.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+    if (h == "localhost" || h == "::1") return true;
+
+    // 127.0.0.0/8 loopback range: "127." followed by exactly three 0-255 octets.
+    if (h.rfind("127.", 0) == 0) {
+        std::string rest = h.substr(4);
+        int octets = 0;
+        int cur = 0;
+        bool any_digit = false;
+        for (char c : rest) {
+            if (c >= '0' && c <= '9') {
+                cur = cur * 10 + (c - '0');
+                any_digit = true;
+                if (cur > 255) return false;
+            } else if (c == '.') {
+                if (!any_digit) return false;
+                octets++;
+                cur = 0;
+                any_digit = false;
+            } else {
+                return false;
+            }
+        }
+        if (!any_digit) return false;
+        octets++; // final octet
+        return octets == 3;
+    }
+
+    return false;
+}
+
+bool set_process_priority_below_normal() {
+#ifdef _WIN32
+    return SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) != FALSE;
+#else
+    // nice +5 approximates Windows BELOW_NORMAL_PRIORITY_CLASS (one step below
+    // normal). Raising nice (a positive value) does not require elevated
+    // privileges, so this works for unprivileged users.
+    static constexpr int kBelowNormalNice = 5;
+    return setpriority(PRIO_PROCESS, 0, kBelowNormalNice) == 0;
+#endif
 }
 
 } // namespace pc

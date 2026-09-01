@@ -34,6 +34,7 @@ struct ConsumerConfig {
     int max_failures = 0;
     int max_duration_sec = 0;
     int idle_timeout_sec = 0;
+    bool yield_cpu = true;
 };
 
 class Consumer {

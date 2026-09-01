@@ -26,7 +26,7 @@ project/
 │   │   ├── signal_handler.h        # Platform-abstracted signal handling
 │   │   ├── socket.h                # Platform-abstracted TCP/UDP socket wrapper
 │   │   ├── types.h                 # Shared enums and structs (Transport, MessageType, etc.)
-│   │   ├── util.h                  # SHA-256 (RFC 6234) + get_data_directory()
+│   │   ├── util.h                  # SHA-256 (RFC 6234) + get_data_directory() + priority helpers
 │   │   └── version.h               # PC_VERSION constant
 │   ├── consumer/
 │   │   ├── consumer.h              # Consumer engine
@@ -396,13 +396,15 @@ public:
 
 ### `util.h` / `util.cpp`
 
-Pure C++ SHA-256 (RFC 6234 implementation), platform data directory, and duration parsing:
+Pure C++ SHA-256 (RFC 6234 implementation), platform data directory, duration parsing, and process-priority helpers:
 
 ```cpp
 std::string sha256_file(const std::string& path);
 std::string sha256_bytes(const uint8_t* data, size_t len);
 std::string get_data_directory();
 int parse_duration(const std::string& s);   // "30" → 30, "30s" → 30, "5m" → 300, "1h" → 3600; "" → 0
+bool is_localhost_host(const std::string& host);          // localhost / ::1 / 127.0.0.0/8
+bool set_process_priority_below_normal();                 // Win: BELOW_NORMAL_PRIORITY_CLASS; Linux: nice +5
 ```
 
 ### `archive_validator.h` / `archive_validator.cpp`
@@ -670,7 +672,7 @@ Key threads:
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments (`--host`, `--port`, `--transport`, `--threads`, `--file-dir`, `--max-messages`, `--local`, `--gateway`, `--consumer-id`, `--handler`, `--handler-config`, `--result-file`, `--max-failures`, `--max-duration`, `--timeout`)
+1. Parse CLI arguments (`--host`, `--port`, `--transport`, `--threads`, `--file-dir`, `--max-messages`, `--local`, `--gateway`, `--consumer-id`, `--handler`, `--handler-config`, `--result-file`, `--max-failures`, `--max-duration`, `--timeout`, `--no-yield`)
 2. Generate `consumer_id` (if not provided)
 3. Construct handler based on `--handler` type
 4. Call `handler_->configure(config.handler_config)` if `--handler-config` provided
@@ -680,6 +682,10 @@ Entry point:
 8. Print statistics on exit
 
 `--timeout SEC` is stored in `ConsumerConfig::idle_timeout_sec`. The main loop shuts down the consumer when no producer communication (any received frame) has occurred for that many seconds.
+
+**Localhost CPU yield.** At the top of `Consumer::run()` (before any worker threads start, so they inherit it), if `config_.yield_cpu` is true and the effective host (`config_.local ? "127.0.0.1" : config_.host`) is a localhost address, the consumer calls `set_process_priority_below_normal()` and logs it. `--no-yield` sets `ConsumerConfig::yield_cpu = false`. The two helpers live in `common/util`:
+- `is_localhost_host(host)` — true for `localhost`, `::1`, or any `127.0.0.0/8` address.
+- `set_process_priority_below_normal()` — Windows: `SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)`; Linux: `setpriority(PRIO_PROCESS, 0, 5)` (nice `+5`, a named constant approximating Windows *below normal*; raising nice needs no elevated privileges).
 
 ## 8. Network Protocol
 
@@ -759,16 +765,16 @@ Size `0` means file not found.
 | `test_queue.cpp`             | `common`                   | BoundedQueue concurrency, shutdown (8 tests) |
 | `test_work_tracker.cpp`      | `producer_lib`             | Work unit lifecycle, status transitions (10 tests) |
 | `test_checkpoint.cpp`        | `common`                   | Save/load, backup, resume (6 tests) |
-| `test_integration.cpp`       | `producer_lib`, `consumer_lib` | Lifecycle tests + real-process end-to-end (6 tests) |
-| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering (20 tests) |
+| `test_integration.cpp`       | `producer_lib`, `consumer_lib` | Lifecycle tests + real-process end-to-end (7 tests) |
+| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering, checkpoint round-trip (25 tests) |
 | `test_sha256.cpp`            | `common`                   | RFC 6234 vectors, file hashing (8 tests) |
 | `test_file_result_sink.cpp`  | `consumer_lib`             | JSON lines output, concurrent writes, stopping criteria (8 tests) |
-| `test_util.cpp`              | `common`                   | `parse_duration` suffix handling (5 tests) |
+| `test_util.cpp`              | `common`                   | `parse_duration` suffix handling, `is_localhost_host`, priority lowering (11 tests) |
 | `test_thread_pool.cpp`       | `consumer_lib`             | Dispatch, failure counting, idle callback, drain, shutdown (7 tests) |
 | `test_echo.cpp`              | `producer_lib`, `consumer_lib` | ECHO plugin generation/resume + handler hash verification (10 tests) |
 | `test_socket.cpp`            | `common`                   | TCP/UDP frame round-trip, bidirectional, error paths (7 tests) |
 
-**Total: 110 tests.** On Windows, run test executables directly rather than through
+**Total: 122 tests.** On Windows, run test executables directly rather than through
 `ctest` (GTest discovery is not reliably supported by `gtest_discover_tests` on all
 MSVC configurations). The `EndToEnd_*` integration tests spawn the real
 `producer.exe`/`consumer.exe`, so build the full project first.

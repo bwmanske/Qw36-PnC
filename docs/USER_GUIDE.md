@@ -310,6 +310,17 @@ consumer [OPTIONS]
 | `--max-failures`  | `0`                | Stop after N failure results (`0` = no limit)    |
 | `--max-duration`  | `0`                | Stop after N seconds (`0` = no limit)            |
 | `--timeout`       | `0`                | Close after N seconds with no producer communication (`0` = no limit) |
+| `--no-yield`      | off                | Do not lower process priority when connecting to a localhost producer |
+
+### Localhost CPU Yield
+
+When a Consumer connects to a **localhost** producer (`127.0.0.1`, any `127.x.x.x`, `::1`, or `localhost`), it lowers its own process priority to *below normal* by default (Windows: `BELOW_NORMAL_PRIORITY_CLASS`; Linux: nice `+5`). This lets the Producer's I/O threads service **remote** connections promptly when the machine is CPU-saturated by a local (e.g. PWD) consumer.
+
+- It only matters under CPU contention — on a machine with spare cores it is a no-op.
+- It trades local throughput for remote responsiveness (the local consumer validates slightly slower).
+- Disable it with `--no-yield` (e.g. for a local-only run where you want maximum local throughput).
+
+The Producer's own priority is unchanged.
 
 ### Thread Pool
 

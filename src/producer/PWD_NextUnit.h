@@ -56,7 +56,10 @@ public:
     std::string  get_pwdAsText();
 	int     get_testPwdLen();
 	void    set_charIndicies(int charIdx, int charIdxValue);
+	int     get_charIndicies(int charIdx);
 	void    set_testPwdLen(int testLen);
+	int     get_permuteStatus();
+	void    set_permuteStatus(int status);
 
 private:
 	int     getLowestIndex();

@@ -65,6 +65,21 @@ Consumer::~Consumer() {
 void Consumer::run() {
     running_ = true;
 
+    // A localhost consumer shares the producer's CPU. Lower our process
+    // priority (before any worker threads start, so they inherit it) so the
+    // producer's I/O threads can service remote connections promptly under
+    // CPU contention. Disable with --no-yield.
+    {
+        std::string eff_host = config_.local ? "127.0.0.1" : config_.host;
+        if (config_.yield_cpu && is_localhost_host(eff_host)) {
+            if (set_process_priority_below_normal()) {
+                std::cout << "[consumer] Localhost consumer: process priority lowered to below normal (disable with --no-yield)\n";
+            } else {
+                std::cerr << "[consumer] Warning: failed to lower process priority\n";
+            }
+        }
+    }
+
     std::cout << "[consumer] " << consumer_id_ << " connecting to "
               << config_.host << ":" << config_.port << "\n";
 

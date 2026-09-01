@@ -348,6 +348,21 @@ void PWD_NextUnit::set_charIndicies(int charIdx, int charIdxValue)
 	charIndicies[charIdx] = charIdxValue;
 }
 
+int PWD_NextUnit::get_charIndicies(int charIdx)
+{
+	return charIndicies[charIdx];
+}
+
+int PWD_NextUnit::get_permuteStatus()
+{
+	return permuteStatus;
+}
+
+void PWD_NextUnit::set_permuteStatus(int status)
+{
+	permuteStatus = status;
+}
+
 void PWD_NextUnit::set_testPwdLen(int testLen)
 {
 	testPwdLen = testLen;
