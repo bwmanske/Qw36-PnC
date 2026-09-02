@@ -97,7 +97,7 @@ data file, and operational limits.
 
 The Producer uses a plugin-based architecture to support different test types.
 Each plugin is a `TestPlugin` dispatch table (`include/producer/test_plugin.h`)
-containing four `std::function` members:
+containing four required `std::function` members plus one optional:
 
 | Function           | Signature                                                  | Description                                      |
 |--------------------|------------------------------------------------------------|--------------------------------------------------|
@@ -105,6 +105,9 @@ containing four `std::function` members:
 | `next_unit`        | `bool(WorkUnitMessage& out)`                               | Generates next work unit, populates `out.job`, returns `false` when exhausted |
 | `checkpoint`       | `nlohmann::json()`                                         | Returns plugin-specific state for checkpoint merge |
 | `exit_conditions`  | `bool()`                                                   | Returns `true` when the plugin wants to stop     |
+| `status`           | `std::string()` *(optional)*                               | Returns plugin-specific status lines for the in-place console display (may be empty) |
+
+`is_valid()` requires only the first four members to be non-null.
 
 The plugin is selected by the `test_type` field in the main JSON config.
 Registration occurs in `producer.cpp::init_plugin()`.
@@ -118,6 +121,8 @@ which uses `#define` constants, raw arrays, and no `std::` prefixes.
   - `use_lower_alpha`, `use_upper_alpha`, `use_numeric`, `use_non_alpha` — character set flags
   - `max_password_length` — maximum password length (default: 10)
   - `starting_password` — optional starting password to resume from
+- **Checkpoint state**: `seq`, `testPwdLen`, `charIndicies[0..9]` (the real odometer
+  digits), and `permuteStatus` — so `--resume` continues mid-permutation without reset
 - **Exit conditions**: Returns `true` when `g_password_found` or `g_file_error` is set.
 - **Global state functions**:
   - `pwd_set_found(password)` — called when a consumer reports a found password
@@ -396,6 +401,7 @@ the last known good state.
   "plugin_state": {
     "seq": 42,
     "testPwdLen": 3,
+    "permuteStatus": 0,
     "charIndicies": [0, 1, 2, -1, -1, -1, -1, -1, -1, -1]
   }
 }
@@ -462,7 +468,7 @@ uses the backup and logs a warning.
 ## 13. CLI Interface
 
 ```
-producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [--seed N] [--duration SECONDS] [--max-time DUR] [--gateway IP] [--checkpoint-dir DIR] [--resume] [--test-type TYPE] [--transfer-siblings]
+producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [--seed N] [--duration SECONDS] [--max-time DUR] [--gateway IP] [--checkpoint-dir DIR] [--resume] [--test-type TYPE] [--transfer-siblings] [--no-status]
 ```
 
 | Flag               | Default            | Description                                      |
@@ -479,6 +485,7 @@ producer --file PATH [--port PORT] [--transport tcp|udp] [--permutation MODE] [-
 | `--resume`         | false              | Resume from checkpoint if one exists             |
 | `--test-type`      | *(from config)*    | Test type identifier (overrides config file)     |
 | `--transfer-siblings` | false          | Transfer all sibling files in config directory to remote consumers |
+| `--no-status`      | false              | Disable the in-place console status display (clean output for file/CI capture) |
 
 The default checkpoint directory is determined by `get_data_directory()`:
 - **Windows**: `%APPDATA%\Producer\`

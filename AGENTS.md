@@ -99,6 +99,7 @@ Consumer uses `IWorkUnitHandler` (`include/consumer/work_unit_handler.h`) and `I
 **Existing plugins:**
 - `PWD` — password permutation generator (`PWD_plugin.cpp`, `PWD_Handler.cpp`)
 - `BENCH` — file chunk benchmark (`BENCH_plugin.cpp`, `BENCH_Handler.cpp`)
+- `ECHO` — sequential payload generator / hash verification (`ECHO_plugin.cpp`, `ECHO_Handler.cpp`)
 
 ## PWD_NextUnit
 
@@ -114,8 +115,6 @@ Consumer uses `IWorkUnitHandler` (`include/consumer/work_unit_handler.h`) and `I
 
 ## Remaining Tasks (see `docs/PROGRESS.md`)
 
-- `PWD_NextUnit` checkpoint state serialization for resume
-- Linux build verification
 - Performance benchmarking
 - Dashboard / telemetry endpoint
 - WebSocket or HTTP/2 transport option

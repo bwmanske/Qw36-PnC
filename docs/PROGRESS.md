@@ -27,7 +27,7 @@
 
 ### Build & Test
 - [x] Windows build (MSVC): `producer.exe` + `consumer.exe`
-- [x] 111/111 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, socket)
+- [x] 122/122 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, socket)
 - [x] Test libraries: `producer_lib`, `consumer_lib` for test linking
 
 ### Linux Build Verification (WSL2)
@@ -41,7 +41,7 @@
   - `src/producer/producer.cpp` — `<arpa/inet.h>` for POSIX; `run()` now creates/binds the listening sockets **before** starting worker threads (fixes a race where `file_transfer_loop` accepted on an unbound socket → busy-loop flood); `dispatcher_loop()` closes the server socket after the loop (covers every stop path)
   - `src/producer/work_tracker.cpp` — `get_pending()` now returns entries in `seq` order (FIFO) instead of `unordered_map` hash order
   - `tests/test_checkpoint.cpp` — `Paths` test uses a writable temp dir instead of `/test/dir` (root-level, permission-denied on Linux)
-- [x] All 12 test suites pass on Linux (111 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
+- [x] All 12 test suites pass on Linux (122 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
 - [x] `test_integration` suite-context hang **fixed** — `find_executable` had an unbounded directory-walk loop (root cause + fix in **Known Issues**)
 
 ### Pluggable Handler Architecture
@@ -168,7 +168,7 @@ The "passes in isolation / hangs in the suite" distinction tracked the **CWD**: 
 2. **Stopping criteria** — ~~What conditions should trigger the Consumer to stop? Options: max failures, max duration, all work consumed, explicit signal from Producer.~~ **RESOLVED**: `max_failures` and `max_duration_sec` via `FileResultSink`.
 3. **PWD_NextUnit integration** — Should the Producer use `PWD_NextUnit` as a drop-in replacement for the job-file-based dispatch, or should it be an alternative mode (`--test-type PWD`)?
 4. **Handler discovery** — Should handlers be compiled-in (current approach) or loadable via plugins/dlls?
-5. **Checkpoint for PWD tests** — The `PWD_NextUnit` class has internal state (charIndicies, testPwdLen). Should this state be serialized into the checkpoint so the Producer can resume mid-permutation?
+5. **Checkpoint for PWD tests** — ~~The `PWD_NextUnit` class has internal state (charIndicies, testPwdLen). Should this state be serialized into the checkpoint so the Producer can resume mid-permutation?~~ **RESOLVED**: Yes — `checkpoint()` now saves the real odometer state (`charIndicies[0..9]`, `testPwdLen`, `permuteStatus`) and `startup()` restores it, so `--resume` continues mid-permutation without reset.
 6. **Consumer result aggregation** — Should the Consumer aggregate results before sending to Producer, or send each result individually (current approach)?
 7. **Multiple handlers per Consumer** — Should a single Consumer process multiple test types, or be dedicated to one handler type?
 

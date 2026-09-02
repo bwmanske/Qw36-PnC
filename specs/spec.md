@@ -243,6 +243,7 @@ producer --file PATH [OPTIONS]
 | `--resume`         | false          | Resume from checkpoint if one exists             |
 | `--test-type`      | (from config)  | Test type identifier (e.g. PWD, BENCH)           |
 | `--transfer-siblings` | false       | Transfer all sibling files in config directory to remote consumers |
+| `--no-status`      | false          | Disable the in-place console status display (clean output for file/CI capture) |
 
 ### Consumer
 
@@ -267,6 +268,7 @@ consumer [OPTIONS]
 | `--max-failures` | 0                  | Stop after N failure results                     |
 | `--max-duration` | 0                  | Stop after N seconds                             |
 | `--timeout`      | 0                  | Close after N seconds with no producer communication (0 = no limit) |
+| `--no-yield`     | false              | Do not lower process priority when connecting to a localhost producer |
 
 ## 10. Project Structure
 
@@ -462,7 +464,7 @@ endif()
 ```
 
 Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the
-executables. Current test count: 110/110 passing.
+executables. Current test count: 122/122 passing.
 
 ## 13. Internal Queue Design
 
@@ -480,7 +482,7 @@ A bounded, thread-safe queue used by both Producer and Consumer:
 ### Producer — `TestPlugin`
 
 The Producer uses a `TestPlugin` dispatch table (`include/producer/test_plugin.h`)
-with four `std::function` members:
+with four required `std::function` members plus one optional:
 
 | Member             | Signature                                          | Purpose                              |
 |--------------------|----------------------------------------------------|--------------------------------------|
@@ -488,8 +490,10 @@ with four `std::function` members:
 | `next_unit`        | `bool(out WorkUnitMessage&)`                       | Generates next work unit             |
 | `checkpoint`       | `nlohmann::json()`                                 | Returns plugin-specific state        |
 | `exit_conditions`  | `bool()`                                           | Returns `true` when plugin wants to stop |
+| `status`           | `std::string()` *(optional)*                       | Returns plugin-specific status lines for the in-place console display (may be empty) |
 
-The `next_unit` method returns `false` when the plugin is exhausted.
+The `next_unit` method returns `false` when the plugin is exhausted. `is_valid()`
+requires only the first four members to be non-null.
 
 ### Existing Plugins
 
@@ -601,7 +605,7 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [x] Producer `--max-time` and consumer `--timeout` shutdown options
 - [x] Unit tests for message, queue, work tracker, checkpoint, util, thread pool, echo, socket
 - [x] End-to-end integration tests (spawn real producer + consumer, verify full cycle and timeout shutdown)
-- [x] 110/110 tests passing
+- [x] 122/122 tests passing
 
 ### Phase 2 — Extensions (future)
 - [ ] Actual task execution (rendering, encoding, etc.)
@@ -639,7 +643,7 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [x] Sequence numbers are monotonically increasing
 - [x] Ctrl+C shuts down both apps cleanly within 5 seconds
 - [x] Final statistics are printed to stdout
-- [x] All unit and integration tests pass (110/110)
+- [x] All unit and integration tests pass (122/122)
 - [x] PWD plugin: generates password permutations, reports found password
 - [x] BENCH plugin: generates file chunk work units
 - [x] FileResultSink writes JSON lines to file

@@ -31,14 +31,14 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 6 | `common` |
 | `test_integration` | `test_integration.exe` | 7 | `producer_lib`, `consumer_lib` |
-| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 20 | `producer_lib` |
+| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 25 | `producer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
 | `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
-| `test_util` | `test_util.exe` | 5 | `common` |
+| `test_util` | `test_util.exe` | 11 | `common` |
 | `test_thread_pool` | `test_thread_pool.exe` | 7 | `consumer_lib` |
 | `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
 | `test_socket` | `test_socket.exe` | 7 | `common` |
-| **Total** | | **111** | |
+| **Total** | | **122** | |
 
 ---
 
@@ -162,7 +162,7 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 
 ---
 
-## test_pwd_next_unit (20 tests)
+## test_pwd_next_unit (25 tests)
 
 ### PWD_NextUnit — Lowercase-only
 
@@ -214,6 +214,16 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 | `TwoChar_FullCycle` | All 676 two-char permutations (`"aa"` through `"zz"`) are generated; next is three-char `"aaa"` |
 | `Indicies_Match_Reversed_String` | `get_pwdAsIndicies()` output `"2,0,3"` matches `charIndicies[1]=0` (left='a'), `charIndicies[0]=3` (right='d') → password `"ad"` |
 
+### PWD_NextUnit — Checkpoint accessors (real resume state)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `GetCharIndicies_RoundTrip` | `get_charIndicies(i)` returns `-1` by default; after `set_charIndicies(0,5)`/`set_charIndicies(3,9)` the getters return 5 and 9 while untouched indices stay `-1` |
+| `PermuteStatus_DefaultSuccess` | A fresh generator reports `get_permuteStatus() == PERMUTE_SUCCESS` |
+| `PermuteStatus_SetGet` | `set_permuteStatus()`/`get_permuteStatus()` round-trips `PERMUTE_DONE` and `PERMUTE_SUCCESS` |
+| `CheckpointRoundTrip_FullState` | After advancing 100 steps (multi-digit odometer), capturing all 10 `charIndicies` + `testPwdLen` + `permuteStatus` and restoring into a fresh generator yields the identical next password |
+| `CheckpointRoundTrip_DoneStaysDone` | An exhausted (`PERMUTE_DONE`) generator stays exhausted after its state is saved and restored (no re-generation) |
+
 ---
 
 ## test_sha256 (8 tests)
@@ -260,7 +270,7 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 
 ---
 
-## test_util (5 tests)
+## test_util (11 tests)
 
 ### ParseDuration
 
@@ -271,6 +281,22 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 | `MinutesSuffix` | `m` suffix parses as minutes (`"1m"` → 60, `"5m"` → 300, `"90m"` → 5400) |
 | `HoursSuffix` | `h` suffix parses as hours (`"1h"` → 3600, `"2h"` → 7200, `"12h"` → 43200) |
 | `Empty` | Empty string returns 0 |
+
+### IsLocalhostHost
+
+| Test | What It Verifies |
+|------|-----------------|
+| `LoopbackIPv4` | Any `127.0.0.0/8` address (`"127.0.0.1"`, `"127.1.2.3"`, `"127.255.255.255"`) is recognized as localhost |
+| `LoopbackIPv6` | `"::1"` is recognized as localhost |
+| `LocalhostName` | `"localhost"` (case-insensitive) is recognized as localhost |
+| `NonLocal` | Non-loopback hosts (`"192.168.1.5"`, `"10.0.0.1"`, `"8.8.8.8"`, `"example.com"`, `"::2"`) are not localhost |
+| `Malformed` | Malformed strings (`"127."`, `"127.0.0"`, `"127.0.0.1.5"`, `"127.0.0.256"`, `"127.abc.def"`, `"127..0.1"`, `""`) are not localhost |
+
+### ProcessPriority
+
+| Test | What It Verifies |
+|------|-----------------|
+| `SetBelowNormal` | `set_process_priority_below_normal()` succeeds and actually lowers the process priority (Windows: `BELOW_NORMAL_PRIORITY_CLASS`; Linux: nice > 0); restores the original afterward. Skips if the OS call is unavailable |
 
 ---
 

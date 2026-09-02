@@ -443,7 +443,7 @@ The Consumer uses a thread pool to process work units concurrently.
 ## 12. CLI Interface
 
 ```
-consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file-dir DIR] [--max-messages N] [--local] [--gateway IP] [--consumer-id ID] [--handler TYPE] [--handler-config FILE] [--result-file FILE] [--max-failures N] [--max-duration SEC] [--timeout SEC]
+consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file-dir DIR] [--max-messages N] [--local] [--gateway IP] [--consumer-id ID] [--handler TYPE] [--handler-config FILE] [--result-file FILE] [--max-failures N] [--max-duration SEC] [--timeout SEC] [--no-yield]
 ```
 
 | Flag           | Default            | Description                                      |
@@ -463,6 +463,30 @@ consumer [--host HOST] [--port PORT] [--transport tcp|udp] [--threads N] [--file
 | `--max-failures`| 0                 | Stop after N failure results (0 = no limit)      |
 | `--max-duration`| 0                 | Stop after N seconds (0 = no limit)              |
 | `--timeout`    | 0                  | Close after N seconds with no producer communication (0 = no limit) |
+| `--no-yield`   | false              | Do not lower process priority when connecting to a localhost producer |
+
+### Localhost CPU Yield
+
+When the Consumer's effective host is a **localhost** address (`127.0.0.1`, any
+`127.0.0.0/8`, `::1`, or `localhost` — i.e. `--local` or a loopback `--host`), it
+lowers its own process priority to *below normal* at the start of `run()`, before
+any worker threads start (so they inherit it):
+
+- **Windows**: `SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)`
+- **Linux**: `setpriority(PRIO_PROCESS, 0, 5)` (nice `+5`, a named constant
+  approximating Windows *below normal*; raising nice needs no elevated privileges)
+
+**Rationale**: the Producer services each consumer on a dedicated I/O thread, so
+the only cross-connection contention is CPU. A CPU-heavy local consumer (e.g. PWD
+`ArchiveValidator::validate`) can saturate the box and delay the Producer's I/O
+bursts, causing remote TCP backpressure. Lowering the local consumer's priority
+lets the Producer's bursts win under saturation. It is a no-op on a machine with
+spare cores, and it trades local throughput for remote responsiveness.
+
+The Producer's own priority is intentionally unchanged (it is I/O-bound). Disable
+the behavior with `--no-yield` (e.g. a local-only run wanting maximum local
+throughput). The two helpers live in `common/util`: `is_localhost_host(host)` and
+`set_process_priority_below_normal()`.
 
 ## 13. Platform Conditionals
 
