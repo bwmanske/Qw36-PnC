@@ -54,6 +54,36 @@ TEST(CheckpointState, RoundTrip) {
     EXPECT_EQ(decoded.consumers_connected.size(), original.consumers_connected.size());
 }
 
+TEST(CheckpointState, PluginStateRoundTrip) {
+    CheckpointState original;
+    original.producer_id = "prod-001";
+    original.last_completed_seq = 42;
+    original.plugin_state = nlohmann::json{
+        {"seq", 42},
+        {"testPwdLen", 3},
+        {"permuteStatus", 0},
+        {"charIndicies", nlohmann::json::array({0, 1, 2, -1, -1, -1, -1, -1, -1, -1})}
+    };
+
+    nlohmann::json j = original.to_json();
+    ASSERT_TRUE(j.contains("plugin_state"));
+
+    CheckpointState decoded = CheckpointState::from_json(j);
+    ASSERT_TRUE(decoded.plugin_state.has_value());
+    EXPECT_EQ(decoded.plugin_state->value("seq", -1), 42);
+    EXPECT_EQ(decoded.plugin_state->value("testPwdLen", -1), 3);
+    EXPECT_EQ(decoded.plugin_state->value("permuteStatus", -1), 0);
+    EXPECT_EQ(decoded.plugin_state->value("charIndicies", nlohmann::json::array()).size(), 10u);
+
+    // Absent plugin_state stays nullopt after round-trip
+    CheckpointState bare;
+    bare.producer_id = "prod-002";
+    nlohmann::json j2 = bare.to_json();
+    EXPECT_FALSE(j2.contains("plugin_state"));
+    CheckpointState decoded2 = CheckpointState::from_json(j2);
+    EXPECT_FALSE(decoded2.plugin_state.has_value());
+}
+
 TEST(CheckpointManager, SaveAndLoad) {
     std::string dir = test_dir();
     fs::create_directories(dir);

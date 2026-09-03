@@ -17,6 +17,7 @@ build\tests\Release\test_file_result_sink.exe
 build\tests\Release\test_util.exe
 build\tests\Release\test_thread_pool.exe
 build\tests\Release\test_echo.exe
+build\tests\Release\test_bench.exe
 build\tests\Release\test_socket.exe
 ```
 
@@ -29,16 +30,17 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_message` | `test_message.exe` | 15 | `common` |
 | `test_queue` | `test_queue.exe` | 8 | `common` |
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
-| `test_checkpoint` | `test_checkpoint.exe` | 6 | `common` |
+| `test_checkpoint` | `test_checkpoint.exe` | 7 | `common` |
 | `test_integration` | `test_integration.exe` | 7 | `producer_lib`, `consumer_lib` |
-| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 25 | `producer_lib` |
+| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 26 | `producer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
 | `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
 | `test_util` | `test_util.exe` | 11 | `common` |
 | `test_thread_pool` | `test_thread_pool.exe` | 7 | `consumer_lib` |
 | `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
+| `test_bench` | `test_bench.exe` | 3 | `producer_lib` |
 | `test_socket` | `test_socket.exe` | 7 | `common` |
-| **Total** | | **122** | |
+| **Total** | | **127** | |
 
 ---
 
@@ -122,13 +124,14 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 
 ---
 
-## test_checkpoint (6 tests)
+## test_checkpoint (7 tests)
 
 ### CheckpointState
 
 | Test | What It Verifies |
 |------|-----------------|
 | `RoundTrip` | All fields (producer_id, source_file, permutation, permutation_seed, total_jobs, last_completed_seq, last_completed_work_unit_id, completed_count, pending_count, consumers_connected) survive JSON serialization round-trip |
+| `PluginStateRoundTrip` | The optional `plugin_state` JSON (e.g. PWD `seq`/`testPwdLen`/`permuteStatus`/`charIndicies`) is emitted by `to_json()` and restored by `from_json()`; when unset it is omitted from JSON and stays `nullopt` after round-trip |
 
 ### CheckpointManager
 
@@ -162,7 +165,7 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 
 ---
 
-## test_pwd_next_unit (25 tests)
+## test_pwd_next_unit (26 tests)
 
 ### PWD_NextUnit — Lowercase-only
 
@@ -223,6 +226,12 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 | `PermuteStatus_SetGet` | `set_permuteStatus()`/`get_permuteStatus()` round-trips `PERMUTE_DONE` and `PERMUTE_SUCCESS` |
 | `CheckpointRoundTrip_FullState` | After advancing 100 steps (multi-digit odometer), capturing all 10 `charIndicies` + `testPwdLen` + `permuteStatus` and restoring into a fresh generator yields the identical next password |
 | `CheckpointRoundTrip_DoneStaysDone` | An exhausted (`PERMUTE_DONE`) generator stays exhausted after its state is saved and restored (no re-generation) |
+
+### PWDPlugin — plugin checkpoint() → startup() round-trip
+
+| Test | What It Verifies |
+|------|-----------------|
+| `CheckpointRoundTrip` | Drives the real `create_pwd_plugin()` wrapper: after 5 units, `checkpoint()` emits `seq`/`charIndicies`; resuming a fresh plugin from that JSON via `startup()` yields the identical next password (exercises the plugin's JSON key names, not just the `PWD_NextUnit` accessors) |
 
 ---
 
@@ -337,6 +346,18 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 | `HashMatch` | A payload whose SHA-256 matches `job.hash` yields `status:"success"` with `match:true`, correct `payload_size` and `actual_hash` |
 | `HashMismatch` | A payload whose hash does not match yields `status:"success"` with `match:false` (mismatch is reported, not an error) |
 | `EmptyPayload` | An empty payload with the empty-input SHA-256 yields `match:true` and `payload_size:0` |
+
+---
+
+## test_bench (3 tests)
+
+### BENCH plugin (producer side)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `IsValid` | `create_bench_plugin()` returns a valid `TestPlugin` dispatch table |
+| `CheckpointState` | After 3 chunks of 128 bytes from a 1000-byte source, `checkpoint()` reports `offset=384` and `seq=3` |
+| `ResumeFromCheckpoint` | Drives the real `create_bench_plugin()` wrapper: after 3 chunks, `checkpoint()` emits `offset`/`seq`; resuming a fresh plugin from that JSON via `startup()` + `set_bench_source_file()` yields the identical next chunk (same `offset`, base64 `data`, and `hash`) |
 
 ---
 

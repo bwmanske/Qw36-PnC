@@ -41,6 +41,7 @@ build\tests\Release\test_file_result_sink.exe
 build\tests\Release\test_util.exe
 build\tests\Release\test_thread_pool.exe
 build\tests\Release\test_echo.exe
+build\tests\Release\test_bench.exe
 build\tests\Release\test_socket.exe
 ```
 

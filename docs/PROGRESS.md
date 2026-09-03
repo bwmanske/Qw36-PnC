@@ -27,11 +27,11 @@
 
 ### Build & Test
 - [x] Windows build (MSVC): `producer.exe` + `consumer.exe`
-- [x] 122/122 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, socket)
+- [x] 127/127 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, bench, socket)
 - [x] Test libraries: `producer_lib`, `consumer_lib` for test linking
 
 ### Linux Build Verification (WSL2)
-- [x] Linux build verified on WSL2 Ubuntu (CMake 4.2.3, g++ 15.2.0): configure + build succeed with 0 errors; all 12 test executables + `producer` + `consumer` produced
+- [x] Linux build verified on WSL2 Ubuntu (CMake 4.2.3, g++ 15.2.0): configure + build succeed with 0 errors; all 13 test executables + `producer` + `consumer` produced
 - [x] Cross-platform fixes (all guarded so Windows behavior is unchanged):
   - `CMakeLists.txt` — `ENABLE_CNG` now platform-conditional (ON on Windows, OFF elsewhere); link the `archive_static` target instead of the hardcoded MSVC `Release/archive.lib` path
   - `include/common/util.h` — added `<cstdint>`/`<cstddef>` (`uint8_t`/`size_t` on GCC)
@@ -41,7 +41,7 @@
   - `src/producer/producer.cpp` — `<arpa/inet.h>` for POSIX; `run()` now creates/binds the listening sockets **before** starting worker threads (fixes a race where `file_transfer_loop` accepted on an unbound socket → busy-loop flood); `dispatcher_loop()` closes the server socket after the loop (covers every stop path)
   - `src/producer/work_tracker.cpp` — `get_pending()` now returns entries in `seq` order (FIFO) instead of `unordered_map` hash order
   - `tests/test_checkpoint.cpp` — `Paths` test uses a writable temp dir instead of `/test/dir` (root-level, permission-denied on Linux)
-- [x] All 12 test suites pass on Linux (122 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
+- [x] All 13 test suites pass on Linux (127 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
 - [x] `test_integration` suite-context hang **fixed** — `find_executable` had an unbounded directory-walk loop (root cause + fix in **Known Issues**)
 
 ### Pluggable Handler Architecture

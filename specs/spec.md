@@ -464,7 +464,7 @@ endif()
 ```
 
 Tests link against `common`, `producer_lib`, and/or `consumer_lib` — never the
-executables. Current test count: 122/122 passing.
+executables. Current test count: 127/127 passing.
 
 ## 13. Internal Queue Design
 
@@ -605,7 +605,7 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [x] Producer `--max-time` and consumer `--timeout` shutdown options
 - [x] Unit tests for message, queue, work tracker, checkpoint, util, thread pool, echo, socket
 - [x] End-to-end integration tests (spawn real producer + consumer, verify full cycle and timeout shutdown)
-- [x] 122/122 tests passing
+- [x] 127/127 tests passing
 
 ### Phase 2 — Extensions (future)
 - [ ] Actual task execution (rendering, encoding, etc.)
@@ -643,7 +643,7 @@ Both applications handle SIGINT (Ctrl+C) and SIGTERM:
 - [x] Sequence numbers are monotonically increasing
 - [x] Ctrl+C shuts down both apps cleanly within 5 seconds
 - [x] Final statistics are printed to stdout
-- [x] All unit and integration tests pass (122/122)
+- [x] All unit and integration tests pass (127/127)
 - [x] PWD plugin: generates password permutations, reports found password
 - [x] BENCH plugin: generates file chunk work units
 - [x] FileResultSink writes JSON lines to file

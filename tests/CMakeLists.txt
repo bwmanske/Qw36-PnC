@@ -47,6 +47,10 @@ add_executable(test_echo test_echo.cpp)
 target_link_libraries(test_echo PRIVATE producer_lib consumer_lib GTest::gtest_main)
 gtest_discover_tests(test_echo)
 
+add_executable(test_bench test_bench.cpp)
+target_link_libraries(test_bench PRIVATE producer_lib GTest::gtest_main)
+gtest_discover_tests(test_bench)
+
 add_executable(test_socket test_socket.cpp)
 target_link_libraries(test_socket PRIVATE common GTest::gtest_main)
 gtest_discover_tests(test_socket)

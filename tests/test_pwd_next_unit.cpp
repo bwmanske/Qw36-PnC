@@ -1,7 +1,13 @@
 #include <gtest/gtest.h>
 #include "PWD_NextUnit.h"
+#include "producer/PWD_plugin.h"
 #include <set>
 #include <string>
+#include <filesystem>
+#include <fstream>
+#include <chrono>
+
+namespace fs = std::filesystem;
 
 // ── Lowercase-only tests ─────────────────────────────────────────
 
@@ -416,4 +422,58 @@ TEST(PWD_NextUnit, CheckpointRoundTrip_DoneStaysDone) {
 
     // Restored DONE generator should immediately report done
     EXPECT_EQ(u2.setNext(), PERMUTE_DONE);
+}
+
+// ── PWD plugin checkpoint round-trip (checkpoint() -> startup()) ──
+
+namespace {
+
+std::string write_pwd_plugin_config() {
+    std::string path;
+#ifdef _WIN32
+    const char* t = std::getenv("TEMP");
+    path = std::string(t ? t : "C:\\Temp") + "\\pc_pwd_plugin_test_" +
+           std::to_string(static_cast<unsigned>(
+               std::hash<std::string>{}(std::to_string(
+                   std::chrono::steady_clock::now().time_since_epoch().count())) % 1000000)) + ".json";
+#else
+    path = "/tmp/pc_pwd_plugin_test_" + std::to_string(getpid()) + ".json";
+#endif
+    std::ofstream f(path);
+    f << R"({"use_lower_alpha":true,"use_upper_alpha":false,"use_numeric":false,"use_non_alpha":false,"max_password_length":3})";
+    return path;
+}
+
+} // namespace
+
+TEST(PWDPlugin, CheckpointRoundTrip) {
+    std::string cfg = write_pwd_plugin_config();
+    pc::TestPlugin a = pc::create_pwd_plugin();
+    a.startup(cfg, nlohmann::json::object());
+
+    // Advance 5 units (odometer at position 5)
+    pc::WorkUnitMessage msg;
+    for (int i = 0; i < 5; i++) {
+        ASSERT_TRUE(a.next_unit(msg));
+    }
+
+    // Capture the plugin's checkpoint JSON
+    nlohmann::json cp = a.checkpoint();
+    EXPECT_EQ(cp.value("seq", -1), 5);
+    EXPECT_EQ(cp.value("charIndicies", nlohmann::json::array()).size(), 10u);
+
+    // The next password the original would produce (position 6)
+    ASSERT_TRUE(a.next_unit(msg));
+    std::string expected = msg.job.value("password", "");
+
+    // Resume a fresh plugin from the captured checkpoint
+    pc::TestPlugin b = pc::create_pwd_plugin();
+    b.startup(cfg, cp);
+
+    // b's first unit must match the original's next
+    pc::WorkUnitMessage msg2;
+    ASSERT_TRUE(b.next_unit(msg2));
+    EXPECT_EQ(msg2.job.value("password", ""), expected);
+
+    fs::remove(cfg);
 }

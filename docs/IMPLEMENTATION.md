@@ -764,17 +764,18 @@ Size `0` means file not found.
 | `test_message.cpp`           | `common`                   | JSON round-trip for all 5 message types (15 tests) |
 | `test_queue.cpp`             | `common`                   | BoundedQueue concurrency, shutdown (8 tests) |
 | `test_work_tracker.cpp`      | `producer_lib`             | Work unit lifecycle, status transitions (10 tests) |
-| `test_checkpoint.cpp`        | `common`                   | Save/load, backup, resume (6 tests) |
+| `test_checkpoint.cpp`        | `common`                   | Save/load, backup, resume, plugin_state round-trip (7 tests) |
 | `test_integration.cpp`       | `producer_lib`, `consumer_lib` | Lifecycle tests + real-process end-to-end (7 tests) |
-| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering, checkpoint round-trip (25 tests) |
+| `test_pwd_next_unit.cpp`     | `producer_lib`             | Permutation engine, char sets, ordering, checkpoint round-trip, plugin checkpoint (26 tests) |
 | `test_sha256.cpp`            | `common`                   | RFC 6234 vectors, file hashing (8 tests) |
 | `test_file_result_sink.cpp`  | `consumer_lib`             | JSON lines output, concurrent writes, stopping criteria (8 tests) |
 | `test_util.cpp`              | `common`                   | `parse_duration` suffix handling, `is_localhost_host`, priority lowering (11 tests) |
 | `test_thread_pool.cpp`       | `consumer_lib`             | Dispatch, failure counting, idle callback, drain, shutdown (7 tests) |
 | `test_echo.cpp`              | `producer_lib`, `consumer_lib` | ECHO plugin generation/resume + handler hash verification (10 tests) |
+| `test_bench.cpp`             | `producer_lib`             | BENCH plugin chunk generation, checkpoint state, resume round-trip (3 tests) |
 | `test_socket.cpp`            | `common`                   | TCP/UDP frame round-trip, bidirectional, error paths (7 tests) |
 
-**Total: 122 tests.** On Windows, run test executables directly rather than through
+**Total: 127 tests.** On Windows, run test executables directly rather than through
 `ctest` (GTest discovery is not reliably supported by `gtest_discover_tests` on all
 MSVC configurations). The `EndToEnd_*` integration tests spawn the real
 `producer.exe`/`consumer.exe`, so build the full project first.
