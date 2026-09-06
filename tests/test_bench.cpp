@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 #include "producer/BENCH_plugin.h"
+#include "consumer/BENCH_Handler.h"
+#include "common/util.h"
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -10,6 +12,18 @@ namespace fs = std::filesystem;
 using namespace pc;
 
 namespace {
+
+// BENCH_Handler resolves the source file by *filename in the CWD*, so the
+// handler tests run inside a temp directory and restore the CWD on exit.
+struct ChdirGuard {
+    std::string old_cwd;
+    explicit ChdirGuard(const std::string& dir) {
+        old_cwd = fs::current_path().string();
+        fs::create_directories(dir);
+        fs::current_path(dir);
+    }
+    ~ChdirGuard() { fs::current_path(old_cwd); }
+};
 
 std::string temp_path(const std::string& prefix) {
 #ifdef _WIN32
@@ -106,4 +120,91 @@ TEST(BENCHPlugin, ResumeFromCheckpoint) {
 
     fs::remove(src);
     fs::remove(cfg);
+}
+
+// ── BENCH handler (consumer side) ────────────────────────────────
+
+namespace {
+
+// Write `bytes` of deterministic content to `filename` in the CWD and return
+// the SHA-256 of the first `chunk` bytes (the handler hashes the local chunk).
+std::string write_local_chunk(const std::string& filename, size_t bytes, size_t chunk) {
+    std::vector<uint8_t> content(bytes);
+    for (size_t i = 0; i < bytes; i++) content[i] = static_cast<uint8_t>(i % 251);
+    std::ofstream f(filename, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(content.data()), static_cast<std::streamsize>(bytes));
+    return sha256_bytes(content.data(), chunk);
+}
+
+} // namespace
+
+TEST(BENCHHandler, Type) {
+    BENCH_Handler handler;
+    EXPECT_EQ(handler.type(), "BENCH");
+}
+
+TEST(BENCHHandler, Match) {
+    ChdirGuard guard(temp_path("pc_bench_handler_dir"));
+    const std::string filename = "bench_src.bin";
+    std::string hash = write_local_chunk(filename, 256, 128);
+
+    WorkUnitMessage work;
+    work.work_unit_id = "prod-001-0";
+    work.seq = 0;
+    work.source_file = filename;
+    work.job = nlohmann::json::object();
+    work.job["offset"] = 0;
+    work.job["chunk_size"] = 128;
+    work.job["data"] = "";  // decoded by the handler but not used for the match
+    work.job["hash"] = hash;
+
+    BENCH_Handler handler;
+    ResultMessage result = handler.handle(work);
+
+    EXPECT_EQ(result.status, "success");
+    EXPECT_TRUE(result.result.value("match", false));
+    EXPECT_EQ(result.result.value("actual_hash", ""), hash);
+    EXPECT_EQ(result.result.value("offset", -1), 0);
+}
+
+TEST(BENCHHandler, Mismatch) {
+    ChdirGuard guard(temp_path("pc_bench_handler_dir"));
+    const std::string filename = "bench_src.bin";
+    write_local_chunk(filename, 256, 128);
+
+    WorkUnitMessage work;
+    work.work_unit_id = "prod-001-1";
+    work.seq = 1;
+    work.source_file = filename;
+    work.job = nlohmann::json::object();
+    work.job["offset"] = 0;
+    work.job["chunk_size"] = 128;
+    work.job["data"] = "";
+    work.job["hash"] = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    BENCH_Handler handler;
+    ResultMessage result = handler.handle(work);
+
+    EXPECT_EQ(result.status, "success");
+    EXPECT_FALSE(result.result.value("match", true));
+}
+
+TEST(BENCHHandler, MissingSourceFile) {
+    WorkUnitMessage work;
+    work.work_unit_id = "prod-001-2";
+    work.seq = 2;
+    work.source_file = "no_such_file.bin";
+    work.job = nlohmann::json::object();
+    work.job["offset"] = 0;
+    work.job["chunk_size"] = 128;
+    work.job["data"] = "";
+    work.job["hash"] = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    BENCH_Handler handler;
+    ResultMessage result = handler.handle(work);
+
+    // No local file → empty chunk → no match (reported, not an error)
+    EXPECT_EQ(result.status, "success");
+    EXPECT_FALSE(result.result.value("match", true));
+    EXPECT_EQ(result.result.value("actual_hash", "x"), "");
 }

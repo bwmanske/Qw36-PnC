@@ -24,7 +24,8 @@ gtest_discover_tests(test_integration)
 
 add_executable(test_pwd_next_unit test_pwd_next_unit.cpp)
 target_include_directories(test_pwd_next_unit PRIVATE ../src/producer)
-target_link_libraries(test_pwd_next_unit PRIVATE producer_lib GTest::gtest_main)
+target_link_libraries(test_pwd_next_unit PRIVATE producer_lib consumer_lib GTest::gtest_main)
+target_compile_definitions(test_pwd_next_unit PRIVATE TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
 gtest_discover_tests(test_pwd_next_unit)
 
 add_executable(test_sha256 test_sha256.cpp)
@@ -48,7 +49,8 @@ target_link_libraries(test_echo PRIVATE producer_lib consumer_lib GTest::gtest_m
 gtest_discover_tests(test_echo)
 
 add_executable(test_bench test_bench.cpp)
-target_link_libraries(test_bench PRIVATE producer_lib GTest::gtest_main)
+target_link_libraries(test_bench PRIVATE producer_lib consumer_lib GTest::gtest_main)
+target_compile_definitions(test_bench PRIVATE TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
 gtest_discover_tests(test_bench)
 
 add_executable(test_socket test_socket.cpp)

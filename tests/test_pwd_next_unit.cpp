@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "PWD_NextUnit.h"
 #include "producer/PWD_plugin.h"
+#include "consumer/PWD_Handler.h"
 #include <set>
 #include <string>
 #include <filesystem>
@@ -476,4 +477,75 @@ TEST(PWDPlugin, CheckpointRoundTrip) {
     EXPECT_EQ(msg2.job.value("password", ""), expected);
 
     fs::remove(cfg);
+}
+
+// ── PWD handler (consumer side) ──────────────────────────────────
+//
+// Ordering matters: PWD_Handler latches a process-wide file error the first
+// time an archive can't be opened, and never clears it. So the success-path
+// tests must run *before* the file-error tests. gtest runs tests in definition
+// order, so keep that order.
+
+TEST(PWDHandler, Type) {
+    pc::PWD_Handler handler;
+    EXPECT_EQ(handler.type(), "PWD");
+}
+
+TEST(PWDHandler, ValidPassword) {
+    pc::PWD_Handler handler;
+
+    pc::WorkUnitMessage work;
+    work.work_unit_id = "prod-001-0";
+    work.seq = 0;
+    work.source_file = std::string(TEST_FIXTURES_DIR) + "/plain.zip";
+    work.job = nlohmann::json::object();
+    work.job["password"] = "testpassword";
+
+    pc::ResultMessage result = handler.handle(work);
+
+    EXPECT_EQ(result.status, "success");
+    EXPECT_EQ(result.found_password, "testpassword");
+    EXPECT_EQ(result.result.value("output", ""), "password_valid");
+}
+
+TEST(PWDHandler, FileError_MissingArchive) {
+    pc::PWD_Handler handler;
+
+    pc::WorkUnitMessage work;
+    work.work_unit_id = "prod-001-1";
+    work.seq = 1;
+    work.source_file = "/no/such/archive.zip";
+    work.job = nlohmann::json::object();
+    work.job["password"] = "anything";
+
+    pc::ResultMessage result = handler.handle(work);
+
+    EXPECT_EQ(result.status, "failure");
+    EXPECT_TRUE(result.file_error.has_value());
+    EXPECT_FALSE(result.result.value("error", "").empty());
+}
+
+TEST(PWDHandler, FileError_Sticky) {
+    pc::PWD_Handler handler;
+
+    // Trigger a file error (also covers the already-latched case).
+    pc::WorkUnitMessage bad;
+    bad.work_unit_id = "prod-001-2";
+    bad.seq = 2;
+    bad.source_file = "/no/such/archive.zip";
+    bad.job = nlohmann::json::object();
+    bad.job["password"] = "x";
+    handler.handle(bad);
+
+    // A subsequent call returns the cached error without re-validating.
+    pc::WorkUnitMessage again;
+    again.work_unit_id = "prod-001-3";
+    again.seq = 3;
+    again.source_file = "/no/such/other.zip";
+    again.job = nlohmann::json::object();
+    again.job["password"] = "y";
+    pc::ResultMessage result = handler.handle(again);
+
+    EXPECT_EQ(result.status, "failure");
+    EXPECT_TRUE(result.file_error.has_value());
 }

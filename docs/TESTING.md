@@ -32,15 +32,15 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 7 | `common` |
 | `test_integration` | `test_integration.exe` | 7 | `producer_lib`, `consumer_lib` |
-| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 26 | `producer_lib` |
+| `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 30 | `producer_lib`, `consumer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
 | `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
 | `test_util` | `test_util.exe` | 11 | `common` |
 | `test_thread_pool` | `test_thread_pool.exe` | 7 | `consumer_lib` |
 | `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
-| `test_bench` | `test_bench.exe` | 3 | `producer_lib` |
+| `test_bench` | `test_bench.exe` | 7 | `producer_lib`, `consumer_lib` |
 | `test_socket` | `test_socket.exe` | 7 | `common` |
-| **Total** | | **127** | |
+| **Total** | | **135** | |
 
 ---
 
@@ -165,7 +165,7 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 
 ---
 
-## test_pwd_next_unit (26 tests)
+## test_pwd_next_unit (30 tests)
 
 ### PWD_NextUnit — Lowercase-only
 
@@ -232,6 +232,17 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 | Test | What It Verifies |
 |------|-----------------|
 | `CheckpointRoundTrip` | Drives the real `create_pwd_plugin()` wrapper: after 5 units, `checkpoint()` emits `seq`/`charIndicies`; resuming a fresh plugin from that JSON via `startup()` yields the identical next password (exercises the plugin's JSON key names, not just the `PWD_NextUnit` accessors) |
+
+### PWDHandler — consumer-side archive validation
+
+| Test | What It Verifies |
+|------|-----------------|
+| `Type` | `handler.type()` returns `"PWD"` |
+| `ValidPassword` | A work unit whose `source_file` is a readable archive (`tests/fixtures/plain.zip`) yields `status:"success"`, `found_password` set, and `output:"password_valid"` |
+| `FileError_MissingArchive` | A work unit pointing at a non-existent archive yields `status:"failure"` with a non-empty `file_error` and `result.error` |
+| `FileError_Sticky` | Once a file error latches the process-wide `g_pwd_file_error`, a subsequent `handle()` returns the cached error without re-validating |
+
+> **Note:** the success/file-error tests run before the file-error tests on purpose — `PWD_Handler` latches a process-wide file error that is never cleared, so ordering (gtest definition order) matters. The `WrongPassword` branch (`ArchiveValidator::Error::WrongPassword`, i.e. libarchive `ARCHIVE_RETRY`) is not exercised: with the archive formats available in CI, a wrong/absent password surfaces as a `FileError` rather than `ARCHIVE_RETRY`.
 
 ---
 
@@ -349,7 +360,7 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 
 ---
 
-## test_bench (3 tests)
+## test_bench (7 tests)
 
 ### BENCH plugin (producer side)
 
@@ -358,6 +369,15 @@ The three `EndToEnd_*` tests require the main executables to be built and use fi
 | `IsValid` | `create_bench_plugin()` returns a valid `TestPlugin` dispatch table |
 | `CheckpointState` | After 3 chunks of 128 bytes from a 1000-byte source, `checkpoint()` reports `offset=384` and `seq=3` |
 | `ResumeFromCheckpoint` | Drives the real `create_bench_plugin()` wrapper: after 3 chunks, `checkpoint()` emits `offset`/`seq`; resuming a fresh plugin from that JSON via `startup()` + `set_bench_source_file()` yields the identical next chunk (same `offset`, base64 `data`, and `hash`) |
+
+### BENCH handler (consumer side)
+
+| Test | What It Verifies |
+|------|-----------------|
+| `Type` | `handler.type()` returns `"BENCH"` |
+| `Match` | With the source file present in the CWD and `job.hash` equal to the SHA-256 of the local chunk, `handle()` returns `status:"success"` with `match:true` and the correct `actual_hash` (runs in a temp dir via `chdir`, since the handler resolves the source by filename in the CWD) |
+| `Mismatch` | With the source file present but a wrong `job.hash`, `handle()` returns `match:false` (mismatch reported, not an error) |
+| `MissingSourceFile` | With no local source file, the chunk is empty and `handle()` returns `match:false` with an empty `actual_hash` |
 
 ---
 
