@@ -115,7 +115,11 @@ void Consumer::run() {
         // more work. The idle callback's request may have been dropped by the
         // 50ms throttle, which would otherwise stall the consumer.
         if (pool_ && pool_->active_count() == 0 && pool_->queue_empty()) {
-            send_work_request(static_cast<int>(pool_->idle_count()));
+            try {
+                send_work_request(static_cast<int>(pool_->idle_count()));
+            } catch (const std::exception&) {
+                // Producer disconnected; the idle timeout will end the run.
+            }
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
@@ -144,7 +148,13 @@ void Consumer::shutdown() {
                 fail.result = nlohmann::json::object();
                 fail.result["error"] = "consumer shutdown";
                 fail.timestamp = now_iso();
-                send_result(fail);
+                // The producer may have already disconnected (e.g. it found the
+                // password and exited); sending is best-effort.
+                try {
+                    send_result(fail);
+                } catch (const std::exception&) {
+                    break;
+                }
             }
         }
 
@@ -290,13 +300,21 @@ void Consumer::receiver_loop() {
                                     mark_completed(result.work_unit_id);
                                 }
                                 if (sink_) sink_->on_result(result);
-                                send_result(result);
+                                // Best-effort: the producer may have disconnected
+                                // (e.g. it found the password and exited).
+                                try {
+                                    send_result(result);
+                                } catch (const std::exception&) {
+                                }
                             }
                         );
 
                         pool_->set_idle_callback(
                             [this](size_t idle) {
-                                send_work_request(static_cast<int>(idle));
+                                try {
+                                    send_work_request(static_cast<int>(idle));
+                                } catch (const std::exception&) {
+                                }
                             }
                         );
 
@@ -305,6 +323,8 @@ void Consumer::receiver_loop() {
                                   << pool_size << " threads, handler="
                                   << (handler_ ? handler_->type() : "none") << "\n";
 
+                        // Point the handler at the local download copy
+                        work.source_file = local_file_path_;
                         // Put the first work unit into the pool
                         pool_->submit(std::move(work));
                         continue;
@@ -325,6 +345,7 @@ void Consumer::receiver_loop() {
                         send_result(dup);
                         continue;
                     }
+                    work.source_file = local_file_path_;
                     pool_->submit(std::move(work));
                 }
             }

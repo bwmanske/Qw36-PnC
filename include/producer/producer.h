@@ -79,6 +79,7 @@ private:
     ProducerConfig config_;
     std::string producer_id_;
     std::string source_file_;
+    std::string source_hash_;
     std::string config_file_;
     std::string test_type_;
     int max_units_ = 0;

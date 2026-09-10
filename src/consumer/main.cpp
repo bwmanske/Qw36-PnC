@@ -4,8 +4,14 @@
 #include "consumer/PWD_Handler.h"
 #include <iostream>
 #include <memory>
+#ifndef _WIN32
+#include <csignal>
+#endif
 
 int main(int argc, char* argv[]) {
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);
+#endif
     std::cout << "[consumer] v" << pc::PC_VERSION << "\n";
 
     pc::ConsumerConfig config;

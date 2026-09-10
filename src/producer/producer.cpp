@@ -193,6 +193,22 @@ void Producer::load_job_config() {
     max_units_ = cfg.value("max_units", 0);
     max_idle_seconds_ = cfg.value("max_idle_seconds", 300);
 
+    // Compute the source file hash so consumers can verify and re-download a
+    // stale local copy. Resolved against the CWD or the config directory.
+    if (!source_file_.empty()) {
+        fs::path config_dir = fs::path(config_.file_path).parent_path();
+        std::string hash_path;
+        if (fs::exists(source_file_)) {
+            hash_path = source_file_;
+        } else if (fs::exists(config_dir / source_file_)) {
+            hash_path = (config_dir / source_file_).string();
+        }
+        if (!hash_path.empty()) {
+            source_hash_ = sha256_file(hash_path);
+            std::cout << "[producer] Source file hash: " << source_hash_ << "\n";
+        }
+    }
+
     if (config_.duration == 0) {
         config_.duration = cfg.value("duration", 0);
     }
@@ -398,6 +414,7 @@ void Producer::handle_work_request(const WorkRequestMessage& req, Socket& client
         WorkUnitMessage msg;
         msg.test_type = test_type_;
         msg.source_file = source_file_;
+        if (!source_hash_.empty()) msg.source_hash = source_hash_;
         msg.work_unit_id = producer_id_ + "-" + std::to_string(next_seq_);
         msg.seq = next_seq_;
         msg.timestamp = now_iso();
@@ -861,6 +878,7 @@ void Producer::handle_udp_work_request(const WorkRequestMessage& req, const std:
         WorkUnitMessage msg;
         msg.test_type = test_type_;
         msg.source_file = source_file_;
+        if (!source_hash_.empty()) msg.source_hash = source_hash_;
         msg.work_unit_id = producer_id_ + "-" + std::to_string(next_seq_);
         msg.seq = next_seq_;
         msg.timestamp = now_iso();

@@ -31,7 +31,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_queue` | `test_queue.exe` | 8 | `common` |
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 7 | `common` |
-| `test_integration` | `test_integration.exe` | 7 | `producer_lib`, `consumer_lib` |
+| `test_integration` | `test_integration.exe` | 9 | `producer_lib`, `consumer_lib` |
 | `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 30 | `producer_lib`, `consumer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
 | `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
@@ -40,7 +40,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
 | `test_bench` | `test_bench.exe` | 7 | `producer_lib`, `consumer_lib` |
 | `test_socket` | `test_socket.exe` | 7 | `common` |
-| **Total** | | **135** | |
+| **Total** | | **137** | |
 
 ---
 

@@ -75,11 +75,15 @@ ResultMessage BENCH_Handler::handle(const WorkUnitMessage& work) {
         std::vector<uint8_t> local_chunk;
 
         if (!work.source_file.empty()) {
-            auto filename = std::filesystem::path(work.source_file).filename().string();
-            if (std::filesystem::exists(filename)) {
-                local_path = filename;
+            if (std::filesystem::exists(work.source_file)) {
+                local_path = work.source_file;
             } else {
-                local_path = "./" + filename;
+                auto filename = std::filesystem::path(work.source_file).filename().string();
+                if (std::filesystem::exists(filename)) {
+                    local_path = filename;
+                } else {
+                    local_path = "./" + filename;
+                }
             }
 
             if (std::filesystem::exists(local_path)) {

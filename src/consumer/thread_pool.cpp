@@ -113,7 +113,7 @@ void ThreadPool::worker_loop() {
         }
 
         ResultMessage result;
-        {
+        try {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             if (handler_) {
                 result = handler_->handle(work);
@@ -124,6 +124,14 @@ void ThreadPool::worker_loop() {
                 result.result = nlohmann::json::object();
                 result.result["error"] = "no handler registered";
             }
+        } catch (const std::exception& e) {
+            result.work_unit_id = work.work_unit_id;
+            result.seq = work.seq;
+            result.status = "failure";
+            result.result = nlohmann::json::object();
+            result.result["error"] = e.what();
+            std::cerr << "[thread_pool] Handler error for " << work.work_unit_id
+                      << ": " << e.what() << "\n";
         }
 
         {
@@ -133,11 +141,14 @@ void ThreadPool::worker_loop() {
 
         active_count_--;
 
-        {
+        try {
             std::lock_guard<std::mutex> lock(callback_mutex_);
             if (result_callback_) {
                 result_callback_(result);
             }
+        } catch (const std::exception& e) {
+            std::cerr << "[thread_pool] Result callback error for " << work.work_unit_id
+                      << ": " << e.what() << "\n";
         }
 
         if (result.status == "success") {
@@ -150,9 +161,13 @@ void ThreadPool::worker_loop() {
 
         // Check if we should request more work
         if (queue_.empty()) {
-            std::lock_guard<std::mutex> lock(callback_mutex_);
-            if (idle_callback_) {
-                idle_callback_(idle_count_.load());
+            try {
+                std::lock_guard<std::mutex> lock(callback_mutex_);
+                if (idle_callback_) {
+                    idle_callback_(idle_count_.load());
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "[thread_pool] Idle callback error: " << e.what() << "\n";
             }
         }
     }

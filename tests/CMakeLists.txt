@@ -20,6 +20,7 @@ gtest_discover_tests(test_checkpoint)
 
 add_executable(test_integration test_integration.cpp)
 target_link_libraries(test_integration PRIVATE producer_lib consumer_lib GTest::gtest_main)
+target_compile_definitions(test_integration PRIVATE TEST_FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures")
 gtest_discover_tests(test_integration)
 
 add_executable(test_pwd_next_unit test_pwd_next_unit.cpp)
