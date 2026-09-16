@@ -31,7 +31,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_queue` | `test_queue.exe` | 8 | `common` |
 | `test_work_tracker` | `test_work_tracker.exe` | 10 | `producer_lib` |
 | `test_checkpoint` | `test_checkpoint.exe` | 7 | `common` |
-| `test_integration` | `test_integration.exe` | 9 | `producer_lib`, `consumer_lib` |
+| `test_integration` | `test_integration.exe` | 10 | `producer_lib`, `consumer_lib` |
 | `test_pwd_next_unit` | `test_pwd_next_unit.exe` | 30 | `producer_lib`, `consumer_lib` |
 | `test_sha256` | `test_sha256.exe` | 8 | `common` |
 | `test_file_result_sink` | `test_file_result_sink.exe` | 8 | `consumer_lib` |
@@ -40,7 +40,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `test_echo` | `test_echo.exe` | 10 | `producer_lib`, `consumer_lib` |
 | `test_bench` | `test_bench.exe` | 7 | `producer_lib`, `consumer_lib` |
 | `test_socket` | `test_socket.exe` | 7 | `common` |
-| **Total** | | **137** | |
+| **Total** | | **138** | |
 
 ---
 
@@ -145,7 +145,7 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 
 ---
 
-## test_integration (7 tests)
+## test_integration (10 tests)
 
 ### Integration
 
@@ -156,10 +156,13 @@ The end-to-end tests (`Integration.EndToEnd_*`) spawn the real `producer.exe` an
 | `CheckpointResume` | Save checkpoint at seq 49 → load it → resume index is 50 (last_completed_seq + 1); permutation_seed is preserved |
 | `MessageSerializationAllTypes` | All three message types (`WorkUnitMessage`, `ResultMessage`, `WorkRequestMessage`) serialize and deserialize correctly with realistic payloads |
 | `EndToEnd_ECHO_FullCycle` | Spawns the real `producer.exe` + `consumer.exe` processes (ECHO test type, 5 units): verifies both exit 0, the result file has ≥5 success lines with a hash `match: true`, and a checkpoint file was written |
+| `EndToEnd_BENCH_FileDownload` | Spawns producer (BENCH, 1 KiB source) + a consumer whose `--file-dir` is empty: verifies the consumer downloads the source over `port+1`, both exit 0, and ≥8 chunk results carry `match: true` |
+| `EndToEnd_PWD_FileDownload` | Spawns producer (PWD, unencrypted ZIP fixture) + a consumer with an empty `--file-dir`: verifies the archive is downloaded and opened (≥1 success, no `file_error`), proving the remote file path works for PWD |
+| `MultiConsumer_Mixed` | Spawns one producer + two consumers at once: consumer A via `127.0.0.1` (`--local`), consumer B via the host's own non-loopback IPv4 (auto-detected; falls back to a second local consumer when none exists). Verifies the accept loop serves both, distinct IDs are tracked, both download the source, and ≥32 total chunk successes are recorded |
 | `EndToEnd_TimeoutShutdown` | Spawns producer (`--max-time 2s`, unlimited units) + consumer (`--timeout 5`): verifies the producer log contains `Max time reached` and the consumer log contains `Idle timeout`, and both exit 0 |
 | `EndToEnd_ECHO_UDP_FullCycle` | Same as `EndToEnd_ECHO_FullCycle` but both processes use `--transport udp`: verifies 5 ECHO work units cross the UDP control channel with ≥5 success lines and ≥5 hash `match: true`, and a checkpoint file was written |
 
-The three `EndToEnd_*` tests require the main executables to be built and use fixed loopback ports (19876/19877/19878); each cleans up its temp directory on exit.
+The `EndToEnd_*` and `MultiConsumer_*` tests require the main executables to be built and use fixed loopback ports (19876/19877/19878); each cleans up its temp directory on exit.
 
 > **Note (Linux):** A prior suite-context hang in `EndToEnd_ECHO_FullCycle` was root-caused to an unbounded directory-walk loop in the `find_executable()` test helper (not in `waitpid` or the forked processes) and is now fixed. `test_integration` passes in the full-suite sequence and in isolation. Full details: `docs/PROGRESS.md` → **Known Issues**.
 

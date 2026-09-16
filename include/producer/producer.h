@@ -28,6 +28,7 @@ struct AdditionalFile {
 struct ProducerConfig {
     std::string file_path;
     uint16_t port = 9876;
+    std::string bind_address = "0.0.0.0";
     Transport transport = Transport::TCP;
     std::string permutation = "sequential";
     int64_t seed = 0;

@@ -12,6 +12,18 @@
 #include <sstream>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#endif
+
 namespace fs = std::filesystem;
 using namespace pc;
 
@@ -212,6 +224,59 @@ static std::string read_file_contents(const std::string& path) {
     if (!f.is_open()) return "";
     return std::string((std::istreambuf_iterator<char>(f)),
                        std::istreambuf_iterator<char>());
+}
+
+// Returns the host's non-loopback IPv4 address (the one the OS would use to
+// reach the public internet), or "" if none is available. Uses the UDP-connect
+// trick: connecting a UDP socket sends no packets, but the kernel selects the
+// source interface, which getsockname() then reveals. Cross-platform and
+// subnet-agnostic.
+static std::string get_local_lan_ip() {
+#ifdef _WIN32
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    SOCKET sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock == INVALID_SOCKET) return "";
+    sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(80);
+    dest.sin_addr.s_addr = inet_addr("8.8.8.8");
+    std::string result;
+    if (::connect(sock, reinterpret_cast<sockaddr*>(&dest), sizeof(dest)) == 0) {
+        sockaddr_in local = {};
+        int len = sizeof(local);
+        if (::getsockname(sock, reinterpret_cast<sockaddr*>(&local), &len) == 0) {
+            char buf[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &local.sin_addr, buf, sizeof(buf))) {
+                std::string ip = buf;
+                if (ip.rfind("127.", 0) != 0) result = ip;
+            }
+        }
+    }
+    ::closesocket(sock);
+    return result;
+#else
+    int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock < 0) return "";
+    sockaddr_in dest = {};
+    dest.sin_family = AF_INET;
+    dest.sin_port = htons(80);
+    dest.sin_addr.s_addr = inet_addr("8.8.8.8");
+    std::string result;
+    if (::connect(sock, reinterpret_cast<sockaddr*>(&dest), sizeof(dest)) == 0) {
+        sockaddr_in local = {};
+        socklen_t len = sizeof(local);
+        if (::getsockname(sock, reinterpret_cast<sockaddr*>(&local), &len) == 0) {
+            char buf[INET_ADDRSTRLEN];
+            if (inet_ntop(AF_INET, &local.sin_addr, buf, sizeof(buf))) {
+                std::string ip = buf;
+                if (ip.rfind("127.", 0) != 0) result = ip;
+            }
+        }
+    }
+    ::close(sock);
+    return result;
+#endif
 }
 
 TEST(Integration, EndToEnd_ECHO_FullCycle) {
@@ -766,6 +831,257 @@ TEST(Integration, EndToEnd_PWD_FileDownload) {
     EXPECT_GE(line_count, 1) << "Expected >= 1 result line, got " << line_count;
     EXPECT_GE(success_count, 1) << "Expected >= 1 success (archive opened), got " << success_count;
     EXPECT_EQ(file_error_count, 0) << "Unexpected file_error in results (archive not opened?)";
+
+    fs::remove_all(tmpdir);
+}
+
+// ── End-to-end: one producer serving a local + a LAN consumer at once ──
+// Consumer A connects via 127.0.0.1 (--local). Consumer B connects via the
+// host's own non-loopback IPv4 (the "simulated LAN" path: file download over
+// the LAN interface, no CPU-yield, sibling-file transfer enabled). When no
+// non-loopback address exists (e.g. a CI container with only loopback), B
+// falls back to a second local consumer so the multi-consumer accept loop is
+// still exercised. Verifies the producer's accept loop handles two
+// simultaneous consumers with distinct IDs and that both receive + process work.
+TEST(Integration, MultiConsumer_Mixed) {
+    std::string tmpdir;
+#ifdef _WIN32
+    const char* t = std::getenv("TEMP");
+    tmpdir = (t ? t : "C:\\Temp") + std::string("\\pc_e2e_multi_") + std::to_string(GetTickCount64());
+#else
+    tmpdir = "/tmp/pc_e2e_multi_" + std::to_string(getpid());
+#endif
+    fs::create_directories(tmpdir);
+
+    // Source data file: 4096 bytes = 32 chunks at 128-byte chunk size.
+    std::string source_path = tmpdir + "/source.bin";
+    {
+        std::vector<uint8_t> data(4096);
+        for (size_t i = 0; i < data.size(); i++) data[i] = static_cast<uint8_t>(i & 0xFF);
+        std::ofstream sf(source_path, std::ios::binary);
+        sf.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    }
+
+    std::string bench_config_path = tmpdir + "/bench_config.json";
+    {
+        std::ofstream cf(bench_config_path);
+        cf << R"({"chunk_size":128})";
+    }
+
+    std::string job_config_path = tmpdir + "/job_config.json";
+    {
+        nlohmann::json cfg;
+        cfg["test_type"] = "BENCH";
+        cfg["config_file"] = bench_config_path;
+        cfg["source_file"] = source_path;
+        cfg["max_units"] = 0;
+        cfg["max_idle_seconds"] = 30;
+        std::ofstream jf(job_config_path);
+        jf << cfg.dump();
+    }
+
+    std::string ckpt_dir = tmpdir + "/checkpoints";
+    std::string file_dir_a = tmpdir + "/files_a";  // consumer A (local)
+    std::string file_dir_b = tmpdir + "/files_b";  // consumer B (LAN / fallback)
+    fs::create_directories(ckpt_dir);
+    fs::create_directories(file_dir_a);
+    fs::create_directories(file_dir_b);
+    std::string result_a = tmpdir + "/results_a.jsonl";
+    std::string result_b = tmpdir + "/results_b.jsonl";
+
+    std::string producer_exe = find_executable("producer");
+    std::string consumer_exe = find_executable("consumer");
+    ASSERT_TRUE(fs::exists(producer_exe)) << "Producer not found at: " << producer_exe;
+    ASSERT_TRUE(fs::exists(consumer_exe)) << "Consumer not found at: " << consumer_exe;
+
+    uint16_t port = 19878;
+    std::string lan_ip = get_local_lan_ip();
+    // Consumer B's effective host + whether it is a "remote" (non-local) consumer.
+    std::string host_b = lan_ip.empty() ? "127.0.0.1" : lan_ip;
+    bool b_is_local = lan_ip.empty();
+    std::string id_b = b_is_local ? "local-2" : "lan-1";
+
+#ifdef _WIN32
+    std::string prod_cmd = "\"" + producer_exe + "\" --file \"" + job_config_path +
+        "\" --port " + std::to_string(port) +
+        " --checkpoint-dir \"" + ckpt_dir + "\"" +
+        " --max-time 30s";
+    STARTUPINFOA si = {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi_prod = {};
+    EXPECT_TRUE(CreateProcessA(nullptr, const_cast<char*>(prod_cmd.c_str()),
+                               nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                               nullptr, nullptr, &si, &pi_prod))
+        << "Failed to launch producer";
+    CloseHandle(pi_prod.hThread);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    std::string cons_a_cmd = "\"" + consumer_exe + "\" --host 127.0.0.1" +
+        " --port " + std::to_string(port) +
+        " --threads 2 --handler BENCH" +
+        " --file-dir \"" + file_dir_a + "\"" +
+        " --max-messages 32 --result-file \"" + result_a + "\"" +
+        " --local --timeout 15 --consumer-id local-1";
+    STARTUPINFOA si_a = {};
+    si_a.cb = sizeof(si_a);
+    PROCESS_INFORMATION pi_a = {};
+    EXPECT_TRUE(CreateProcessA(nullptr, const_cast<char*>(cons_a_cmd.c_str()),
+                               nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                               nullptr, nullptr, &si_a, &pi_a))
+        << "Failed to launch consumer A";
+    CloseHandle(pi_a.hThread);
+
+    std::string cons_b_cmd = "\"" + consumer_exe + "\" --host " + host_b +
+        " --port " + std::to_string(port) +
+        " --threads 2 --handler BENCH" +
+        " --file-dir \"" + file_dir_b + "\"" +
+        " --max-messages 32 --result-file \"" + result_b + "\"" +
+        (b_is_local ? " --local" : "") +
+        " --timeout 15 --consumer-id " + id_b;
+    STARTUPINFOA si_b = {};
+    si_b.cb = sizeof(si_b);
+    PROCESS_INFORMATION pi_b = {};
+    EXPECT_TRUE(CreateProcessA(nullptr, const_cast<char*>(cons_b_cmd.c_str()),
+                               nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                               nullptr, nullptr, &si_b, &pi_b))
+        << "Failed to launch consumer B";
+    CloseHandle(pi_b.hThread);
+
+    DWORD w_prod = WaitForSingleObject(pi_prod.hProcess, 60000);
+    if (w_prod != WAIT_OBJECT_0) TerminateProcess(pi_prod.hProcess, 1);
+    DWORD w_a = WaitForSingleObject(pi_a.hProcess, 60000);
+    if (w_a != WAIT_OBJECT_0) TerminateProcess(pi_a.hProcess, 1);
+    DWORD w_b = WaitForSingleObject(pi_b.hProcess, 60000);
+    if (w_b != WAIT_OBJECT_0) TerminateProcess(pi_b.hProcess, 1);
+    EXPECT_EQ(w_prod, WAIT_OBJECT_0) << "Producer did not exit within 60s";
+    EXPECT_EQ(w_a, WAIT_OBJECT_0) << "Consumer A did not exit within 60s";
+    EXPECT_EQ(w_b, WAIT_OBJECT_0) << "Consumer B did not exit within 60s";
+
+    DWORD exit_code;
+    GetExitCodeProcess(pi_prod.hProcess, &exit_code);
+    EXPECT_EQ(exit_code, 0u) << "Producer exit code: " << exit_code;
+    GetExitCodeProcess(pi_a.hProcess, &exit_code);
+    EXPECT_EQ(exit_code, 0u) << "Consumer A exit code: " << exit_code;
+    GetExitCodeProcess(pi_b.hProcess, &exit_code);
+    EXPECT_EQ(exit_code, 0u) << "Consumer B exit code: " << exit_code;
+    CloseHandle(pi_prod.hProcess);
+    CloseHandle(pi_a.hProcess);
+    CloseHandle(pi_b.hProcess);
+#else
+    pid_t prod_pid = fork();
+    if (prod_pid == 0) {
+        execl(producer_exe.c_str(), "producer",
+              "--file", job_config_path.c_str(),
+              "--port", std::to_string(port).c_str(),
+              "--checkpoint-dir", ckpt_dir.c_str(),
+              "--max-time", "30s",
+              nullptr);
+        _exit(127);
+    }
+    ASSERT_GT(prod_pid, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    pid_t pid_a = fork();
+    if (pid_a == 0) {
+        execl(consumer_exe.c_str(), "consumer",
+              "--host", "127.0.0.1",
+              "--port", std::to_string(port).c_str(),
+              "--threads", "2",
+              "--handler", "BENCH",
+              "--file-dir", file_dir_a.c_str(),
+              "--max-messages", "32",
+              "--result-file", result_a.c_str(),
+              "--local",
+              "--timeout", "15",
+              "--consumer-id", "local-1",
+              nullptr);
+        _exit(127);
+    }
+    ASSERT_GT(pid_a, 0);
+
+    if (b_is_local) {
+        pid_t pid_b = fork();
+        if (pid_b == 0) {
+            execl(consumer_exe.c_str(), "consumer",
+                  "--host", "127.0.0.1",
+                  "--port", std::to_string(port).c_str(),
+                  "--threads", "2",
+                  "--handler", "BENCH",
+                  "--file-dir", file_dir_b.c_str(),
+                  "--max-messages", "32",
+                  "--result-file", result_b.c_str(),
+                  "--local",
+                  "--timeout", "15",
+                  "--consumer-id", "local-2",
+                  nullptr);
+            _exit(127);
+        }
+        ASSERT_GT(pid_b, 0);
+        int st_prod, st_a, st_b;
+        waitpid(prod_pid, &st_prod, 0);
+        waitpid(pid_a, &st_a, 0);
+        waitpid(pid_b, &st_b, 0);
+        EXPECT_TRUE(WIFEXITED(st_prod) && WEXITSTATUS(st_prod) == 0) << "Producer exited abnormally";
+        EXPECT_TRUE(WIFEXITED(st_a) && WEXITSTATUS(st_a) == 0) << "Consumer A exited abnormally";
+        EXPECT_TRUE(WIFEXITED(st_b) && WEXITSTATUS(st_b) == 0) << "Consumer B exited abnormally";
+    } else {
+        pid_t pid_b = fork();
+        if (pid_b == 0) {
+            execl(consumer_exe.c_str(), "consumer",
+                  "--host", host_b.c_str(),
+                  "--port", std::to_string(port).c_str(),
+                  "--threads", "2",
+                  "--handler", "BENCH",
+                  "--file-dir", file_dir_b.c_str(),
+                  "--max-messages", "32",
+                  "--result-file", result_b.c_str(),
+                  "--timeout", "15",
+                  "--consumer-id", "lan-1",
+                  nullptr);
+            _exit(127);
+        }
+        ASSERT_GT(pid_b, 0);
+        int st_prod, st_a, st_b;
+        waitpid(prod_pid, &st_prod, 0);
+        waitpid(pid_a, &st_a, 0);
+        waitpid(pid_b, &st_b, 0);
+        EXPECT_TRUE(WIFEXITED(st_prod) && WEXITSTATUS(st_prod) == 0) << "Producer exited abnormally";
+        EXPECT_TRUE(WIFEXITED(st_a) && WEXITSTATUS(st_a) == 0) << "Consumer A exited abnormally";
+        EXPECT_TRUE(WIFEXITED(st_b) && WEXITSTATUS(st_b) == 0) << "Consumer B exited abnormally";
+    }
+#endif
+
+    // Both consumers must have downloaded the source file into their own dir.
+    EXPECT_TRUE(fs::exists(file_dir_a + "/source.bin")) << "Consumer A did not download source";
+    EXPECT_TRUE(fs::exists(file_dir_b + "/source.bin")) << "Consumer B did not download source";
+
+    // Both result files must exist and contain at least one success.
+    auto count_successes = [](const std::string& path) -> int {
+        std::string content = read_file_contents(path);
+        int n = 0;
+        std::istringstream ss(content);
+        std::string line;
+        while (std::getline(ss, line)) {
+            size_t end = line.find_last_not_of(" \t\r\n");
+            if (end == std::string::npos) continue;
+            line = line.substr(0, end + 1);
+            if (line.empty()) continue;
+            try {
+                nlohmann::json j = nlohmann::json::parse(line);
+                if (j.value("status", "") == "success") n++;
+            } catch (...) {}
+        }
+        return n;
+    };
+
+    ASSERT_TRUE(fs::exists(result_a)) << "Consumer A result file not created";
+    ASSERT_TRUE(fs::exists(result_b)) << "Consumer B result file not created";
+    int succ_a = count_successes(result_a);
+    int succ_b = count_successes(result_b);
+    EXPECT_GE(succ_a, 1) << "Consumer A processed no work (successes=" << succ_a << ")";
+    EXPECT_GE(succ_b, 1) << "Consumer B processed no work (successes=" << succ_b << ")";
+    EXPECT_GE(succ_a + succ_b, 32)
+        << "Expected >= 32 total successes (all chunks), got " << (succ_a + succ_b);
 
     fs::remove_all(tmpdir);
 }

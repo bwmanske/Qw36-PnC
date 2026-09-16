@@ -82,6 +82,7 @@ producer --file PATH [OPTIONS]
 | Flag               | Default        | Description                                      |
 |--------------------|----------------|--------------------------------------------------|
 | `--port`           | `9876`         | TCP/UDP port to bind on                          |
+| `--bind`           | `0.0.0.0`      | IPv4 address to listen on (`0.0.0.0` = all interfaces; `127.0.0.1` = loopback only) |
 | `--transport`      | `tcp`          | Transport protocol: `tcp` or `udp`               |
 | `--permutation`    | `sequential`   | Job dispatch order (see below)                   |
 | `--seed`           | current time   | Random seed for `random` permutation             |
@@ -439,6 +440,35 @@ Ensure the following:
    (default `9876`) and the file transfer port (`9877`).
 2. The Consumer can reach the Producer's IP address over the network.
 3. Both machines use the same transport protocol (`tcp` or `udp`).
+
+### Mixed Localhost + LAN (simultaneous)
+
+The Producer binds to all interfaces by default, so a localhost Consumer and a
+LAN Consumer can connect to the **same** Producer at the same time — the accept
+loop hands each connection to its own thread and tracks them by distinct
+`--consumer-id`.
+
+```bash
+# Producer (binds 0.0.0.0 — reachable on loopback AND the LAN)
+producer --file config.json --port 9876
+
+# Localhost consumer (same machine)
+consumer --host 127.0.0.1 --port 9876 --local --consumer-id local-1
+
+# LAN consumer (another machine on 192.168.1.0/24)
+consumer --host 192.168.1.50 --port 9876 --consumer-id lan-1
+```
+
+Notes:
+- The LAN Consumer connects to the **Producer machine's** LAN IP (e.g.
+  `192.168.1.50`), not the gateway (`192.168.1.1` is the router).
+- The Producer's firewall must allow inbound on both `9876` (control) and
+  `9877` (file transfer) for the LAN interface; loopback is allowed by default.
+- A LAN Consumer downloads the source file over `port + 1` and verifies its
+  SHA-256 against the work unit's `source_hash`; a `--local` Consumer skips
+  sibling-file transfer since it already shares the Producer's filesystem.
+- To restrict the Producer to loopback only (no LAN access), use
+  `producer --file config.json --bind 127.0.0.1`.
 
 ### Network Protocol Details
 

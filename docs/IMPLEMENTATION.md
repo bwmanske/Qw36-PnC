@@ -544,7 +544,7 @@ Key threads:
 ### `main.cpp`
 
 Entry point:
-1. Parse CLI arguments (`--file`, `--port`, `--transport`, `--permutation`, `--seed`, `--duration`, `--max-time`, `--gateway`, `--checkpoint-dir`, `--resume`, `--test-type`, `--transfer-siblings`, `--no-status`)
+1. Parse CLI arguments (`--file`, `--port`, `--bind`, `--transport`, `--permutation`, `--seed`, `--duration`, `--max-time`, `--gateway`, `--checkpoint-dir`, `--resume`, `--test-type`, `--transfer-siblings`, `--no-status`)
 2. Validate config file
 3. Check for checkpoint (if `--resume`)
 4. Construct and run `Producer`
@@ -775,7 +775,7 @@ Size `0` means file not found.
 | `test_bench.cpp`             | `producer_lib`, `consumer_lib` | BENCH plugin chunk generation, checkpoint state, resume round-trip, BENCH handler hash verification (7 tests) |
 | `test_socket.cpp`            | `common`                   | TCP/UDP frame round-trip, bidirectional, error paths (7 tests) |
 
-**Total: 137 tests.** On Windows, run test executables directly rather than through
+**Total: 138 tests.** On Windows, run test executables directly rather than through
 `ctest` (GTest discovery is not reliably supported by `gtest_discover_tests` on all
 MSVC configurations). The `EndToEnd_*` integration tests spawn the real
 `producer.exe`/`consumer.exe`, so build the full project first.

@@ -13,9 +13,10 @@ namespace fs = std::filesystem;
 static void print_usage() {
     std::cerr << "Usage: producer --file PATH [OPTIONS]\n"
               << "\nOptions:\n"
-              << "  --file PATH            Path to job file (required)\n"
-              << "  --port PORT            Port to bind on (default: 9876)\n"
-              << "  --transport tcp|udp    Transport protocol (default: tcp)\n"
+               << "  --file PATH            Path to job file (required)\n"
+               << "  --port PORT            Port to bind on (default: 9876)\n"
+               << "  --bind ADDR            IPv4 address to listen on (default: 0.0.0.0 = all interfaces; 127.0.0.1 = loopback only)\n"
+               << "  --transport tcp|udp    Transport protocol (default: tcp)\n"
               << "  --permutation MODE     Job permutation: sequential, random, round_robin, reverse (default: sequential)\n"
               << "  --seed N               PRNG seed for random permutation\n"
               << "  --duration SECS        Run duration in seconds (0 = run until done)\n"
@@ -40,6 +41,8 @@ int run_producer(int argc, char* argv[]) {
             config.file_path = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
             config.port = static_cast<uint16_t>(std::stoi(argv[++i]));
+        } else if (arg == "--bind" && i + 1 < argc) {
+            config.bind_address = argv[++i];
         } else if (arg == "--transport" && i + 1 < argc) {
             std::string t = argv[++i];
             config.transport = (t == "udp") ? Transport::UDP : Transport::TCP;

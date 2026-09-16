@@ -27,7 +27,7 @@
 
 ### Build & Test
 - [x] Windows build (MSVC): `producer.exe` + `consumer.exe`
-- [x] 137/137 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, bench, socket)
+- [x] 138/138 tests passing (message, queue, work_tracker, checkpoint, integration, pwd_next_unit, sha256, file_result_sink, util, thread_pool, echo, bench, socket)
 - [x] Test libraries: `producer_lib`, `consumer_lib` for test linking
 
 ### Linux Build Verification (WSL2)
@@ -41,7 +41,7 @@
   - `src/producer/producer.cpp` — `<arpa/inet.h>` for POSIX; `run()` now creates/binds the listening sockets **before** starting worker threads (fixes a race where `file_transfer_loop` accepted on an unbound socket → busy-loop flood); `dispatcher_loop()` closes the server socket after the loop (covers every stop path)
   - `src/producer/work_tracker.cpp` — `get_pending()` now returns entries in `seq` order (FIFO) instead of `unordered_map` hash order
   - `tests/test_checkpoint.cpp` — `Paths` test uses a writable temp dir instead of `/test/dir` (root-level, permission-denied on Linux)
-- [x] All 13 test suites pass on Linux (137 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
+- [x] All 13 test suites pass on Linux (138 tests); manual end-to-end runs (real `producer` + `consumer`, ECHO) work perfectly: both exit 0, no file-transfer flood, 5/5 results with hash match, checkpoint written
 - [x] `test_integration` suite-context hang **fixed** — `find_executable` had an unbounded directory-walk loop (root cause + fix in **Known Issues**)
 
 ### Pluggable Handler Architecture
@@ -121,6 +121,8 @@
 - [x] Consumer idle safety net — main loop requests work when pool is fully idle (`ThreadPool::queue_empty()`)
 - [x] `PWD_NextUnit` checkpoint state serialization for resume — PWD `checkpoint()` now saves the real generator position (`charIndicies[0..9]` via new `get_charIndicies()`, `testPwdLen`, `permuteStatus` via new `get_permuteStatus()`); `startup()` restores all three (new `set_permuteStatus()`). Verified e2e: checkpoint holds real indicies and `--resume` continues seamlessly (no reset/gap).
 - [x] Remote (cross-machine) connection support — consumer rewrites `work.source_file` to local download path before pool submit; BENCH_Handler resolves full path (CWD fallback); producer computes + stamps `source_hash` on every work unit; SIGPIPE ignored in consumer (Linux); thread-pool worker_loop exception-safe; E2E file-download tests (`EndToEnd_BENCH_FileDownload` + `EndToEnd_PWD_FileDownload`)
+- [x] Producer `--bind ADDR` flag — restrict the listen interface (default `0.0.0.0` = all; `127.0.0.1` = loopback only); applied to both the control and file-transfer sockets
+- [x] `Integration.MultiConsumer_Mixed` — one producer serving a localhost consumer + a LAN consumer (auto-detected non-loopback IPv4, local fallback) simultaneously; verifies the accept loop, distinct-ID tracking, and that both download + process work
 
 ### Low Priority
 - [x] Linux build verification — build + **12/12 suites pass** on WSL2 (the `test_integration` suite-context hang was root-caused and fixed; see **Known Issues**)

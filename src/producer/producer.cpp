@@ -68,23 +68,23 @@ void Producer::run() {
     // threads that call accept() on them, to avoid a race where a thread
     // accepts on an uninitialized socket and busy-loops on the error.
     server_socket_ = Socket(config_.transport);
-    server_socket_.bind("0.0.0.0", config_.port);
+    server_socket_.bind(config_.bind_address, config_.port);
 
     try {
         file_transfer_socket_ = Socket(Transport::TCP);
-        file_transfer_socket_.bind("0.0.0.0", config_.port + 1);
+        file_transfer_socket_.bind(config_.bind_address, config_.port + 1);
         file_transfer_socket_.listen(5);
-        std::cout << "[producer] File transfer server on 0.0.0.0:" << (config_.port + 1) << "\n";
+        std::cout << "[producer] File transfer server on " << config_.bind_address << ":" << (config_.port + 1) << "\n";
     } catch (const std::exception& e) {
         std::cerr << "[producer] File transfer server failed: " << e.what() << "\n";
     }
 
     if (config_.transport == Transport::TCP) {
         server_socket_.listen(5);
-        std::cout << "[producer] Listening on 0.0.0.0:" << config_.port << " (TCP)\n";
+        std::cout << "[producer] Listening on " << config_.bind_address << ":" << config_.port << " (TCP)\n";
     } else {
         server_socket_.set_recv_timeout(5000);
-        std::cout << "[producer] Listening on 0.0.0.0:" << config_.port << " (UDP)\n";
+        std::cout << "[producer] Listening on " << config_.bind_address << ":" << config_.port << " (UDP)\n";
     }
 
     running_ = true;
