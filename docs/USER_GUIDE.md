@@ -448,16 +448,39 @@ LAN Consumer can connect to the **same** Producer at the same time — the accep
 loop hands each connection to its own thread and tracks them by distinct
 `--consumer-id`.
 
+**Two machines** (true LAN test):
+
 ```bash
 # Producer (binds 0.0.0.0 — reachable on loopback AND the LAN)
 producer --file config.json --port 9876
 
-# Localhost consumer (same machine)
+# Localhost consumer (same machine as the producer)
 consumer --host 127.0.0.1 --port 9876 --local --consumer-id local-1
 
 # LAN consumer (another machine on 192.168.1.0/24)
 consumer --host 192.168.1.50 --port 9876 --consumer-id lan-1
 ```
+
+**One machine (simulated)** — exercise both code paths without a second host by
+pointing the "LAN" consumer at the machine's *own* non-loopback IP (find it with
+`ipconfig` on Windows or `ip -4 addr` on Linux, e.g. `192.168.1.7`):
+
+```bash
+# Producer (binds 0.0.0.0)
+producer --file config.json --port 9876
+
+# Localhost consumer
+consumer --host 127.0.0.1 --port 9876 --local --consumer-id local-1
+
+# "LAN" consumer — same machine, but via its own LAN IP (no --local)
+consumer --host 192.168.1.7 --port 9876 --consumer-id lan-1
+```
+
+Because both connections originate locally, **no firewall rule is needed** for the
+simulated case (loopback and the local interface are both allowed by default). The
+`lan-1` consumer still takes the full remote path: it downloads the source file
+over `port + 1` and verifies `source_hash`, exactly as a consumer on another
+machine would.
 
 Notes:
 - The LAN Consumer connects to the **Producer machine's** LAN IP (e.g.
