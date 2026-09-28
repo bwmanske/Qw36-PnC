@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure (CMake)
+        run: cmake -B build -DBUILD_TESTS=ON
+
+      - name: Build (Release)
+        run: cmake --build build --config Release --parallel
+
+      - name: Run tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tests = @("test_message","test_queue","test_work_tracker","test_checkpoint",
+                     "test_integration","test_pwd_next_unit","test_sha256","test_file_result_sink",
+                     "test_util","test_thread_pool","test_echo","test_bench","test_socket")
+          $failed = 0
+          foreach ($t in $tests) {
+            Write-Host "=== $t ==="
+            & "build\tests\Release\$t.exe"
+            if ($LASTEXITCODE -ne 0) { Write-Error "$t FAILED"; $failed = 1 }
+          }
+          exit $failed
+
+      - name: Run tests (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          for t in test_message test_queue test_work_tracker test_checkpoint test_integration \
+                   test_pwd_next_unit test_sha256 test_file_result_sink test_util \
+                   test_thread_pool test_echo test_bench test_socket; do
+            echo "=== $t ==="
+            ./build/tests/$t || { echo "$t FAILED"; exit 1; }
+          done

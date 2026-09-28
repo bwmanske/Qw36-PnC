@@ -14,6 +14,19 @@
 ./build.sh all        # clean + build + test
 ```
 
+## Continuous Integration
+
+GitHub Actions (`.github/workflows/ci.yml`) builds and tests on every push and
+pull request to `master`, on both **Windows (MSVC)** and **Linux (GCC)**:
+
+1. Configure — `cmake -B build -DBUILD_TESTS=ON`
+2. Build — `cmake --build build --config Release --parallel`
+3. Run all 13 test executables directly (not `ctest`)
+
+A `concurrency` group cancels in-progress runs when a newer commit lands on the
+same branch. All dependencies are fetched via CMake `FetchContent`, so no
+pre-installation is required on the runners.
+
 ## Targets
 
 | Target    | Description                    |

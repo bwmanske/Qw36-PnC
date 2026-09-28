@@ -49,6 +49,8 @@ build\tests\Release\test_socket.exe
 - Producer `--max-time DUR` — stop after a duration; value may end in `s`/`m`/`h` (e.g. `30s`, `5m`, `1h`; bare number = seconds; `0` = no limit).
 - Consumer `--timeout SEC` — close after N seconds with no producer communication (`0` = no limit).
 
+**CI:** GitHub Actions (`.github/workflows/ci.yml`) builds + runs all 13 test executables on Windows (MSVC) and Linux (GCC) for every push/PR to `master`. It runs the test binaries directly (not `ctest`), Release config, with a concurrency group that cancels stale runs.
+
 ## MSVC Gotchas
 
 - Always `#define NOMINMAX` before `<windows.h>` — MSVC's `min`/`max` macros break `std::min`/`std::max`.
