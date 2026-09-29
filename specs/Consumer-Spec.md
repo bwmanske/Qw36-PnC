@@ -566,34 +566,34 @@ Result sink:             file file=results.jsonl total=150 ok=148 fail=2
 
 ## 16. Acceptance Criteria
 
-- [ ] `cmake -B build && cmake --build build` succeeds on Windows (MSVC)
-- [ ] `cmake -B build && cmake --build build` succeeds on Linux (GCC/Clang)
-- [ ] Consumer connects to Producer over TCP and receives work units
-- [ ] Consumer receives work units over UDP when `--transport udp` is set
-- [ ] Consumer downloads source file when it does not exist locally
-- [ ] Consumer skips download when source file exists and hash matches
-- [ ] Consumer exits with code 3 when source file download fails
-- [ ] Thread pool defaults to 1 thread per core
-- [ ] `--threads N` overrides the default pool size
-- [ ] Consumer sends `work_request` on connection and when threads are idle
-- [ ] Consumer sends `result` back to Producer after each work unit
-- [ ] All required JSON fields are validated on every work unit
-- [ ] Duplicate `work_unit_id` messages are detected via LRU cache (3000 max)
-- [ ] Duplicate work units receive `"success"` with `"duplicate, already processed"`
-- [ ] `--max-messages N` stops processing after N received units
-- [ ] `--timeout SEC` shuts the Consumer down after N seconds without producer communication
-- [ ] `--local` flag connects to 127.0.0.1
-- [ ] `--handler PWD` instantiates `PWD_Handler`
-- [ ] `--handler BENCH` instantiates `BENCH_Handler`
-- [ ] PWD_Handler sets `found_password` on correct password
-- [ ] PWD_Handler sets `file_error` on archive file error
-- [ ] BENCH_Handler decodes base64, reads file chunk, verifies SHA-256
-- [ ] `--result-file FILE` creates `FileResultSink` writing JSON lines
-- [ ] Each JSON line includes `sink_stats` with running totals
-- [ ] Heartbeat sent every 5 seconds via dedicated thread
-- [ ] Work request throttled to max 1 per 50ms per connection
-- [ ] Socket recv timeout of 10s on control channel
-- [ ] Socket recv timeout of 30s on file transfer channel
-- [ ] On shutdown, final statistics are printed to stdout
-- [ ] Ctrl+C shuts down cleanly within 5 seconds
-- [ ] All unit tests pass
+- [x] `cmake -B build && cmake --build build` succeeds on Windows (MSVC)
+- [x] `cmake -B build && cmake --build build` succeeds on Linux (GCC/Clang)
+- [x] Consumer connects to Producer over TCP and receives work units
+- [x] Consumer receives work units over UDP when `--transport udp` is set
+- [x] Consumer downloads source file when it does not exist locally
+- [x] Consumer skips download when source file exists and hash matches
+- [x] Consumer exits with code 3 when source file download fails
+- [x] Thread pool defaults to 1 thread per core
+- [x] `--threads N` overrides the default pool size
+- [x] Consumer sends `work_request` on connection and when threads are idle
+- [x] Consumer sends `result` back to Producer after each work unit
+- [x] All required JSON fields are validated on every work unit
+- [x] Duplicate `work_unit_id` messages are detected via LRU cache (3000 max)
+- [x] Duplicate work units receive `"success"` with `"duplicate, already processed"`
+- [x] `--max-messages N` stops processing after N received units
+- [x] `--timeout SEC` shuts the Consumer down after N seconds without producer communication
+- [x] `--local` flag connects to 127.0.0.1
+- [x] `--handler PWD` instantiates `PWD_Handler`
+- [x] `--handler BENCH` instantiates `BENCH_Handler`
+- [x] PWD_Handler sets `found_password` on correct password
+- [x] PWD_Handler sets `file_error` on archive file error
+- [x] BENCH_Handler decodes base64, reads file chunk, verifies SHA-256
+- [x] `--result-file FILE` creates `FileResultSink` writing JSON lines
+- [x] Each JSON line includes `sink_stats` with running totals
+- [x] Heartbeat sent every 5 seconds via dedicated thread
+- [x] Work request throttled to max 1 per 50ms per connection
+- [x] Socket recv timeout of 10s on control channel
+- [x] Socket recv timeout of 30s on file transfer channel
+- [x] On shutdown, final statistics are printed to stdout
+- [x] Ctrl+C shuts down cleanly within 5 seconds
+- [x] All unit tests pass

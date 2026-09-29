@@ -568,36 +568,36 @@ For PWD test type, additionally prints:
 
 ## 17. Acceptance Criteria
 
-- [ ] `cmake -B build -DBUILD_TESTS=ON && cmake --build build --config Release` succeeds on Windows (MSVC)
-- [ ] `cmake -B build -DBUILD_TESTS=ON && cmake --build build` succeeds on Linux (GCC/Clang)
-- [ ] Producer exits with code 1 when `--file` is missing or invalid
-- [ ] Producer reads and validates the JSON config file before starting workers
-- [ ] Producer exits with code 1 when `test_type` is missing or unknown
-- [ ] PWD plugin generates password permutations correctly
-- [ ] BENCH plugin generates file chunks with correct offset and hash
-- [ ] Every sent work unit contains `test_type`, `source_file`, and `work_unit_id`
-- [ ] Producer tracks all work units in the WorkTracker
-- [ ] Producer marks work unit as `Completed` on successful result
-- [ ] Producer marks work unit as `Failed` on failure result
-- [ ] Producer halts (`running_ = false`) when `found_password` is received
-- [ ] Producer halts (`running_ = false`) when `file_error` is received
-- [ ] Producer accepts multiple simultaneous Consumer connections
-- [ ] Producer responds to `work_request` messages with available work units
-- [ ] Producer accepts `heartbeat` messages and updates consumer activity
-- [ ] Monitor thread detects stale consumers after 30s of inactivity
-- [ ] Monitor thread closes stale consumer socket and reclaims work units
-- [ ] Disconnect logging includes consumer ID and reclaimed work unit count
-- [ ] Checkpoint file is written every 60 seconds and on shutdown
-- [ ] Backup checkpoint file exists and is a valid prior state
-- [ ] Checkpoint includes `plugin_state` from `plugin_.checkpoint()`
-- [ ] `--resume` restores plugin state and continues from last completed seq
-- [ ] `--max-time DUR` shuts the Producer down after the given duration (supports `s`/`m`/`h` suffixes)
-- [ ] File transfer server accepts on `port + 1` and serves files correctly
-- [ ] File transfer responds with size `0` for not-found files
-- [ ] Socket recv timeout (10s) throws "Socket recv timeout" on accepted sockets
-- [ ] Ctrl+C shuts down cleanly within 5 seconds with checkpoint written
-- [ ] Final statistics include test type, generated, dispatched, completed, failed, pending counts
-- [ ] PWD statistics include found password or file error when applicable
-- [ ] Default checkpoint directory is `%APPDATA%\Producer\` on Windows
-- [ ] Default checkpoint directory is `~/.local/share/producer/` on Linux
-- [ ] All unit tests pass
+- [x] `cmake -B build -DBUILD_TESTS=ON && cmake --build build --config Release` succeeds on Windows (MSVC)
+- [x] `cmake -B build -DBUILD_TESTS=ON && cmake --build build` succeeds on Linux (GCC/Clang)
+- [x] Producer exits with code 1 when `--file` is missing or invalid
+- [x] Producer reads and validates the JSON config file before starting workers
+- [x] Producer exits with code 1 when `test_type` is missing or unknown
+- [x] PWD plugin generates password permutations correctly
+- [x] BENCH plugin generates file chunks with correct offset and hash
+- [x] Every sent work unit contains `test_type`, `source_file`, and `work_unit_id`
+- [x] Producer tracks all work units in the WorkTracker
+- [x] Producer marks work unit as `Completed` on successful result
+- [x] Producer marks work unit as `Failed` on failure result
+- [x] Producer halts (`running_ = false`) when `found_password` is received
+- [x] Producer halts (`running_ = false`) when `file_error` is received
+- [x] Producer accepts multiple simultaneous Consumer connections
+- [x] Producer responds to `work_request` messages with available work units
+- [x] Producer accepts `heartbeat` messages and updates consumer activity
+- [x] Monitor thread detects stale consumers after 30s of inactivity
+- [x] Monitor thread closes stale consumer socket and reclaims work units
+- [x] Disconnect logging includes consumer ID and reclaimed work unit count
+- [x] Checkpoint file is written every 60 seconds and on shutdown
+- [x] Backup checkpoint file exists and is a valid prior state
+- [x] Checkpoint includes `plugin_state` from `plugin_.checkpoint()`
+- [x] `--resume` restores plugin state and continues from last completed seq
+- [x] `--max-time DUR` shuts the Producer down after the given duration (supports `s`/`m`/`h` suffixes)
+- [x] File transfer server accepts on `port + 1` and serves files correctly
+- [x] File transfer responds with size `0` for not-found files
+- [x] Socket recv timeout (10s) throws "Socket recv timeout" on accepted sockets
+- [x] Ctrl+C shuts down cleanly within 5 seconds with checkpoint written
+- [x] Final statistics include test type, generated, dispatched, completed, failed, pending counts
+- [x] PWD statistics include found password or file error when applicable
+- [x] Default checkpoint directory is `%APPDATA%\Producer\` on Windows
+- [x] Default checkpoint directory is `~/.local/share/producer/` on Linux
+- [x] All unit tests pass

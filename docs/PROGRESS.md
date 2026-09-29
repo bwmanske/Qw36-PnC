@@ -123,9 +123,10 @@
 - [x] Remote (cross-machine) connection support — consumer rewrites `work.source_file` to local download path before pool submit; BENCH_Handler resolves full path (CWD fallback); producer computes + stamps `source_hash` on every work unit; SIGPIPE ignored in consumer (Linux); thread-pool worker_loop exception-safe; E2E file-download tests (`EndToEnd_BENCH_FileDownload` + `EndToEnd_PWD_FileDownload`)
 - [x] Producer `--bind ADDR` flag — restrict the listen interface (default `0.0.0.0` = all; `127.0.0.1` = loopback only); applied to both the control and file-transfer sockets
 - [x] `Integration.MultiConsumer_Mixed` — one producer serving a localhost consumer + a LAN consumer (auto-detected non-loopback IPv4, local fallback) simultaneously; verifies the accept loop, distinct-ID tracking, and that both download + process work
+- [x] GitHub Actions CI — `.github/workflows/ci.yml` builds + runs all 13 test executables on Windows (MSVC) and Linux (GCC) for every push/PR to `master`; Release config, concurrency group cancels stale runs
 
 ### Low Priority
-- [x] Linux build verification — build + **12/12 suites pass** on WSL2 (the `test_integration` suite-context hang was root-caused and fixed; see **Known Issues**)
+- [x] Linux build verification — build + **13/13 suites pass** on WSL2 (the `test_integration` suite-context hang was root-caused and fixed; see **Known Issues**)
 - [ ] Performance benchmarking
 - [ ] Dashboard / telemetry endpoint
 - [ ] WebSocket or HTTP/2 transport option
@@ -134,7 +135,7 @@
 
 ### [RESOLVED 2026-08-27] `test_integration` hangs when run after other test binaries (Linux)
 
-**Status:** Fixed. Root cause identified and corrected in `tests/test_integration.cpp::find_executable`. Verified: full suite (4 preceding binaries + `test_integration`) passes 7/7 on WSL2, and Windows 12/12 suites still pass.
+**Status:** Fixed. Root cause identified and corrected in `tests/test_integration.cpp::find_executable`. Verified: full suite (4 preceding binaries + `test_integration`) passes 7/7 on WSL2, and Windows 13/13 suites still pass.
 
 **Symptom (original)**
 - `test_integration` hung 100% at `Integration.EndToEnd_ECHO_FullCycle` (5th of 7 tests) when run after the other test binaries, killed by the runner's 60 s timeout (exit 124). The other 5 tests passed.
@@ -163,7 +164,7 @@ The "passes in isolation / hangs in the suite" distinction tracked the **CWD**: 
 
 **Verification**
 - Linux (WSL2): full suite sequence (test_message, test_queue, test_work_tracker, test_checkpoint, then test_integration) → all pass; `EndToEnd_ECHO_FullCycle` completes in ~10 s. `test_integration` in isolation also passes 7/7.
-- Windows: full build + all 12 suites pass (no regression).
+- Windows: full build + all 13 suites pass (no regression).
 
 ## Open Questions
 
